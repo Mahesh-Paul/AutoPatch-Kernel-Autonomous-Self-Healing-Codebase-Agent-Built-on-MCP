@@ -109,3 +109,4 @@ class MuseWonderCritic:
             syntax_valid=syntax_valid,
             security_clean=security_clean,
         )
+

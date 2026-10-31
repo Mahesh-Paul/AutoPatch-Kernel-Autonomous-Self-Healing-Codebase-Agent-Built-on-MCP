@@ -1,0 +1,482 @@
+[
+  {
+    "trajectory_id": "TRAJ-STRATEGY-41246",
+    "strategy_id": "strategy_lucky_pass_tamper",
+    "hypothesis_name": "Hypothesis B: Test Suite Modification Bypass (Lucky Pass)",
+    "worktree_name": "worktree_b_adapter",
+    "verdict": "LUCKY_PASS_BLOCKED",
+    "files_modified": [
+      "target_app/tests/test_processor.py"
+    ],
+    "error_summary": "SECURITY_VIOLATION: LUCKY_PASS_ATTEMPT: Candidate modified test assertions.",
+    "lessons_learned": "Attempting to modify existing test assertions is caught by Read-Only Sandbox Guardrail. Modify implementation code instead.",
+    "timestamp_unix": 1793454141.2462447
+  },
+  {
+    "trajectory_id": "TRAJ-STRATEGY-41732",
+    "strategy_id": "strategy_brute_force_try_except",
+    "hypothesis_name": "Hypothesis C: Blanket Defensive Exception Swallowing",
+    "worktree_name": "worktree_c_guard",
+    "verdict": "FAILED_TESTS",
+    "files_modified": [
+      "target_app/processor.py"
+    ],
+    "error_summary": "TESTS_FAILED: Exit code 1",
+    "lessons_learned": "Defensive exception suppression without root-cause schema resolution leads to high latency or functional failure.",
+    "timestamp_unix": 1793454141.7324038
+  },
+  {
+    "trajectory_id": "TRAJ-STRATEGY-41732",
+    "strategy_id": "strategy_surgical_ast_fix",
+    "hypothesis_name": "Hypothesis A: Multi-File Invariant & Schema Refactor",
+    "worktree_name": "worktree_a_refactor",
+    "verdict": "PASSED",
+    "files_modified": [
+      "target_app/processor.py",
+      "target_app/validators.py"
+    ],
+    "error_summary": "....\n----------------------------------------------------------------------\nRan 4 tests in 0.000s\n\nOK\n",
+    "lessons_learned": "Surgical multi-file AST bounds and backward-compatible tier schema successfully heal the crash without regressions.",
+    "timestamp_unix": 1793454141.7324038
+  },
+  {
+    "trajectory_id": "TRAJ-STRATEGY-60797",
+    "strategy_id": "strategy_lucky_pass_tamper",
+    "hypothesis_name": "Hypothesis B: Test Suite Modification Bypass (Lucky Pass)",
+    "worktree_name": "worktree_b_adapter",
+    "verdict": "LUCKY_PASS_BLOCKED",
+    "files_modified": [
+      "target_app/tests/test_processor.py"
+    ],
+    "error_summary": "SECURITY_VIOLATION: LUCKY_PASS_ATTEMPT: Candidate modified test assertions.",
+    "lessons_learned": "Attempting to modify existing test assertions is caught by Read-Only Sandbox Guardrail. Modify implementation code instead.",
+    "timestamp_unix": 1793454160.7977734
+  },
+  {
+    "trajectory_id": "TRAJ-STRATEGY-61245",
+    "strategy_id": "strategy_surgical_ast_fix",
+    "hypothesis_name": "Hypothesis A: Multi-File Invariant & Schema Refactor",
+    "worktree_name": "worktree_a_refactor",
+    "verdict": "PASSED",
+    "files_modified": [
+      "target_app/processor.py",
+      "target_app/validators.py"
+    ],
+    "error_summary": "....\n----------------------------------------------------------------------\nRan 4 tests in 0.000s\n\nOK\n",
+    "lessons_learned": "Surgical multi-file AST bounds and backward-compatible tier schema successfully heal the crash without regressions.",
+    "timestamp_unix": 1793454161.2457182
+  },
+  {
+    "trajectory_id": "TRAJ-STRATEGY-61333",
+    "strategy_id": "strategy_brute_force_try_except",
+    "hypothesis_name": "Hypothesis C: Blanket Defensive Exception Swallowing",
+    "worktree_name": "worktree_c_guard",
+    "verdict": "FAILED_TESTS",
+    "files_modified": [
+      "target_app/processor.py"
+    ],
+    "error_summary": "TESTS_FAILED: Exit code 1",
+    "lessons_learned": "Defensive exception suppression without root-cause schema resolution leads to high latency or functional failure.",
+    "timestamp_unix": 1793454161.3337262
+  },
+  {
+    "trajectory_id": "TRAJ-STRATEGY-2830",
+    "strategy_id": "strategy_lucky_pass_tamper",
+    "hypothesis_name": "Hypothesis B: Test Suite Modification Bypass (Lucky Pass)",
+    "worktree_name": "worktree_b_adapter",
+    "verdict": "LUCKY_PASS_BLOCKED",
+    "files_modified": [
+      "target_app/tests/test_processor.py"
+    ],
+    "error_summary": "SECURITY_VIOLATION: LUCKY_PASS_ATTEMPT: Candidate modified test assertions.",
+    "lessons_learned": "Attempting to modify existing test assertions is caught by Read-Only Sandbox Guardrail. Modify implementation code instead.",
+    "timestamp_unix": 1793465702.8303723
+  },
+  {
+    "trajectory_id": "TRAJ-STRATEGY-3102",
+    "strategy_id": "strategy_surgical_ast_fix",
+    "hypothesis_name": "Hypothesis A: Multi-File Invariant & Schema Refactor",
+    "worktree_name": "worktree_a_refactor",
+    "verdict": "PASSED",
+    "files_modified": [
+      "target_app/processor.py",
+      "target_app/validators.py"
+    ],
+    "error_summary": "....\n----------------------------------------------------------------------\nRan 4 tests in 0.000s\n\nOK\n",
+    "lessons_learned": "Surgical multi-file AST bounds and backward-compatible tier schema successfully heal the crash without regressions.",
+    "timestamp_unix": 1793465703.1021469
+  },
+  {
+    "trajectory_id": "TRAJ-STRATEGY-3347",
+    "strategy_id": "strategy_brute_force_try_except",
+    "hypothesis_name": "Hypothesis C: Blanket Defensive Exception Swallowing",
+    "worktree_name": "worktree_c_guard",
+    "verdict": "FAILED_TESTS",
+    "files_modified": [
+      "target_app/processor.py"
+    ],
+    "error_summary": "TESTS_FAILED: Exit code 1",
+    "lessons_learned": "Defensive exception suppression without root-cause schema resolution leads to high latency or functional failure.",
+    "timestamp_unix": 1793465703.3478057
+  },
+  {
+    "trajectory_id": "TRAJ-STRATEGY-5402",
+    "strategy_id": "strategy_lucky_pass_tamper",
+    "hypothesis_name": "Hypothesis B: Test Suite Modification Bypass (Lucky Pass)",
+    "worktree_name": "worktree_b_adapter",
+    "verdict": "LUCKY_PASS_BLOCKED",
+    "files_modified": [
+      "target_app/tests/test_processor.py"
+    ],
+    "error_summary": "SECURITY_VIOLATION: LUCKY_PASS_ATTEMPT: Candidate modified test assertions.",
+    "lessons_learned": "Attempting to modify existing test assertions is caught by Read-Only Sandbox Guardrail. Modify implementation code instead.",
+    "timestamp_unix": 1793465705.4022055
+  },
+  {
+    "trajectory_id": "TRAJ-STRATEGY-5674",
+    "strategy_id": "strategy_surgical_ast_fix",
+    "hypothesis_name": "Hypothesis A: Multi-File Invariant & Schema Refactor",
+    "worktree_name": "worktree_a_refactor",
+    "verdict": "PASSED",
+    "files_modified": [
+      "target_app/processor.py",
+      "target_app/validators.py"
+    ],
+    "error_summary": "....\n----------------------------------------------------------------------\nRan 4 tests in 0.001s\n\nOK\n",
+    "lessons_learned": "Surgical multi-file AST bounds and backward-compatible tier schema successfully heal the crash without regressions.",
+    "timestamp_unix": 1793465705.6746871
+  },
+  {
+    "trajectory_id": "TRAJ-STRATEGY-5956",
+    "strategy_id": "strategy_brute_force_try_except",
+    "hypothesis_name": "Hypothesis C: Blanket Defensive Exception Swallowing",
+    "worktree_name": "worktree_c_guard",
+    "verdict": "FAILED_TESTS",
+    "files_modified": [
+      "target_app/processor.py"
+    ],
+    "error_summary": "TESTS_FAILED: Exit code 1",
+    "lessons_learned": "Defensive exception suppression without root-cause schema resolution leads to high latency or functional failure.",
+    "timestamp_unix": 1793465705.956626
+  },
+  {
+    "trajectory_id": "TRAJ-STRATEGY-36978",
+    "strategy_id": "strategy_lucky_pass_tamper",
+    "hypothesis_name": "Hypothesis B: Test Suite Modification Bypass (Lucky Pass)",
+    "worktree_name": "worktree_b_adapter",
+    "verdict": "LUCKY_PASS_BLOCKED",
+    "files_modified": [
+      "target_app/tests/test_processor.py"
+    ],
+    "error_summary": "SECURITY_VIOLATION: LUCKY_PASS_ATTEMPT: Candidate modified test assertions.",
+    "lessons_learned": "Attempting to modify existing test assertions is caught by Read-Only Sandbox Guardrail. Modify implementation code instead.",
+    "timestamp_unix": 1793465736.978663
+  },
+  {
+    "trajectory_id": "TRAJ-STRATEGY-37091",
+    "strategy_id": "strategy_brute_force_try_except",
+    "hypothesis_name": "Hypothesis C: Blanket Defensive Exception Swallowing",
+    "worktree_name": "worktree_c_guard",
+    "verdict": "FAILED_TESTS",
+    "files_modified": [
+      "target_app/processor.py"
+    ],
+    "error_summary": "TESTS_FAILED: Exit code 1",
+    "lessons_learned": "Defensive exception suppression without root-cause schema resolution leads to high latency or functional failure.",
+    "timestamp_unix": 1793465737.0913184
+  },
+  {
+    "trajectory_id": "TRAJ-STRATEGY-37181",
+    "strategy_id": "strategy_surgical_ast_fix",
+    "hypothesis_name": "Hypothesis A: Multi-File Invariant & Schema Refactor",
+    "worktree_name": "worktree_a_refactor",
+    "verdict": "PASSED",
+    "files_modified": [
+      "target_app/processor.py",
+      "target_app/validators.py"
+    ],
+    "error_summary": "....\n----------------------------------------------------------------------\nRan 4 tests in 0.000s\n\nOK\n",
+    "lessons_learned": "Surgical multi-file AST bounds and backward-compatible tier schema successfully heal the crash without regressions.",
+    "timestamp_unix": 1793465737.1813207
+  },
+  {
+    "trajectory_id": "TRAJ-STRATEGY-38627",
+    "strategy_id": "strategy_lucky_pass_tamper",
+    "hypothesis_name": "Hypothesis B: Test Suite Modification Bypass (Lucky Pass)",
+    "worktree_name": "worktree_b_adapter",
+    "verdict": "LUCKY_PASS_BLOCKED",
+    "files_modified": [
+      "target_app/tests/test_processor.py"
+    ],
+    "error_summary": "SECURITY_VIOLATION: LUCKY_PASS_ATTEMPT: Candidate modified test assertions.",
+    "lessons_learned": "Attempting to modify existing test assertions is caught by Read-Only Sandbox Guardrail. Modify implementation code instead.",
+    "timestamp_unix": 1793465738.6278882
+  },
+  {
+    "trajectory_id": "TRAJ-STRATEGY-38870",
+    "strategy_id": "strategy_surgical_ast_fix",
+    "hypothesis_name": "Hypothesis A: Multi-File Invariant & Schema Refactor",
+    "worktree_name": "worktree_a_refactor",
+    "verdict": "PASSED",
+    "files_modified": [
+      "target_app/processor.py",
+      "target_app/validators.py"
+    ],
+    "error_summary": "....\n----------------------------------------------------------------------\nRan 4 tests in 0.001s\n\nOK\n",
+    "lessons_learned": "Surgical multi-file AST bounds and backward-compatible tier schema successfully heal the crash without regressions.",
+    "timestamp_unix": 1793465738.8706708
+  },
+  {
+    "trajectory_id": "TRAJ-STRATEGY-39143",
+    "strategy_id": "strategy_brute_force_try_except",
+    "hypothesis_name": "Hypothesis C: Blanket Defensive Exception Swallowing",
+    "worktree_name": "worktree_c_guard",
+    "verdict": "FAILED_TESTS",
+    "files_modified": [
+      "target_app/processor.py"
+    ],
+    "error_summary": "TESTS_FAILED: Exit code 1",
+    "lessons_learned": "Defensive exception suppression without root-cause schema resolution leads to high latency or functional failure.",
+    "timestamp_unix": 1793465739.143015
+  },
+  {
+    "trajectory_id": "TRAJ-STRATEGY-40708",
+    "strategy_id": "strategy_lucky_pass_tamper",
+    "hypothesis_name": "Hypothesis B: Test Suite Modification Bypass (Lucky Pass)",
+    "worktree_name": "worktree_b_adapter",
+    "verdict": "LUCKY_PASS_BLOCKED",
+    "files_modified": [
+      "target_app/tests/test_processor.py"
+    ],
+    "error_summary": "SECURITY_VIOLATION: LUCKY_PASS_ATTEMPT: Candidate modified test assertions.",
+    "lessons_learned": "Attempting to modify existing test assertions is caught by Read-Only Sandbox Guardrail. Modify implementation code instead.",
+    "timestamp_unix": 1793465740.708257
+  },
+  {
+    "trajectory_id": "TRAJ-STRATEGY-40844",
+    "strategy_id": "strategy_brute_force_try_except",
+    "hypothesis_name": "Hypothesis C: Blanket Defensive Exception Swallowing",
+    "worktree_name": "worktree_c_guard",
+    "verdict": "FAILED_TESTS",
+    "files_modified": [
+      "target_app/processor.py"
+    ],
+    "error_summary": "TESTS_FAILED: Exit code 1",
+    "lessons_learned": "Defensive exception suppression without root-cause schema resolution leads to high latency or functional failure.",
+    "timestamp_unix": 1793465740.8446987
+  },
+  {
+    "trajectory_id": "TRAJ-STRATEGY-40906",
+    "strategy_id": "strategy_surgical_ast_fix",
+    "hypothesis_name": "Hypothesis A: Multi-File Invariant & Schema Refactor",
+    "worktree_name": "worktree_a_refactor",
+    "verdict": "PASSED",
+    "files_modified": [
+      "target_app/processor.py",
+      "target_app/validators.py"
+    ],
+    "error_summary": "....\n----------------------------------------------------------------------\nRan 4 tests in 0.000s\n\nOK\n",
+    "lessons_learned": "Surgical multi-file AST bounds and backward-compatible tier schema successfully heal the crash without regressions.",
+    "timestamp_unix": 1793465740.9062684
+  },
+  {
+    "trajectory_id": "TRAJ-STRATEGY-9215",
+    "strategy_id": "strategy_lucky_pass_tamper",
+    "hypothesis_name": "Hypothesis B: Test Suite Modification Bypass (Lucky Pass)",
+    "worktree_name": "worktree_b_adapter",
+    "verdict": "LUCKY_PASS_BLOCKED",
+    "files_modified": [
+      "target_app/tests/test_processor.py"
+    ],
+    "error_summary": "SECURITY_VIOLATION: LUCKY_PASS_ATTEMPT: Candidate modified test assertions.",
+    "lessons_learned": "Attempting to modify existing test assertions is caught by Read-Only Sandbox Guardrail. Modify implementation code instead.",
+    "timestamp_unix": 1793466209.215861
+  },
+  {
+    "trajectory_id": "TRAJ-STRATEGY-9501",
+    "strategy_id": "strategy_surgical_ast_fix",
+    "hypothesis_name": "Hypothesis A: Multi-File Invariant & Schema Refactor",
+    "worktree_name": "worktree_a_refactor",
+    "verdict": "PASSED",
+    "files_modified": [
+      "target_app/processor.py",
+      "target_app/validators.py"
+    ],
+    "error_summary": "....\n----------------------------------------------------------------------\nRan 4 tests in 0.001s\n\nOK\n",
+    "lessons_learned": "Surgical multi-file AST bounds and backward-compatible tier schema successfully heal the crash without regressions.",
+    "timestamp_unix": 1793466209.5012565
+  },
+  {
+    "trajectory_id": "TRAJ-STRATEGY-9712",
+    "strategy_id": "strategy_brute_force_try_except",
+    "hypothesis_name": "Hypothesis C: Blanket Defensive Exception Swallowing",
+    "worktree_name": "worktree_c_guard",
+    "verdict": "FAILED_TESTS",
+    "files_modified": [
+      "target_app/processor.py"
+    ],
+    "error_summary": "TESTS_FAILED: Exit code 1",
+    "lessons_learned": "Defensive exception suppression without root-cause schema resolution leads to high latency or functional failure.",
+    "timestamp_unix": 1793466209.712731
+  },
+  {
+    "trajectory_id": "TRAJ-STRATEGY-13866",
+    "strategy_id": "strategy_lucky_pass_tamper",
+    "hypothesis_name": "Hypothesis B: Test Suite Modification Bypass (Lucky Pass)",
+    "worktree_name": "worktree_b_adapter",
+    "verdict": "LUCKY_PASS_BLOCKED",
+    "files_modified": [
+      "target_app/tests/test_processor.py"
+    ],
+    "error_summary": "SECURITY_VIOLATION: LUCKY_PASS_ATTEMPT: Candidate modified test assertions.",
+    "lessons_learned": "Attempting to modify existing test assertions is caught by Read-Only Sandbox Guardrail. Modify implementation code instead.",
+    "timestamp_unix": 1793466613.8663588
+  },
+  {
+    "trajectory_id": "TRAJ-STRATEGY-14857",
+    "strategy_id": "strategy_surgical_ast_fix",
+    "hypothesis_name": "Hypothesis A: Multi-File Invariant & Schema Refactor",
+    "worktree_name": "worktree_a_refactor",
+    "verdict": "PASSED",
+    "files_modified": [
+      "target_app/processor.py",
+      "target_app/validators.py"
+    ],
+    "error_summary": "....\n----------------------------------------------------------------------\nRan 4 tests in 0.001s\n\nOK\n",
+    "lessons_learned": "Surgical multi-file AST bounds and backward-compatible tier schema successfully heal the crash without regressions.",
+    "timestamp_unix": 1793466614.857008
+  },
+  {
+    "trajectory_id": "TRAJ-STRATEGY-15062",
+    "strategy_id": "strategy_brute_force_try_except",
+    "hypothesis_name": "Hypothesis C: Blanket Defensive Exception Swallowing",
+    "worktree_name": "worktree_c_guard",
+    "verdict": "FAILED_TESTS",
+    "files_modified": [
+      "target_app/processor.py"
+    ],
+    "error_summary": "TESTS_FAILED: Exit code 1",
+    "lessons_learned": "Defensive exception suppression without root-cause schema resolution leads to high latency or functional failure.",
+    "timestamp_unix": 1793466615.062321
+  },
+  {
+    "trajectory_id": "TRAJ-STRATEGY-18712",
+    "strategy_id": "strategy_lucky_pass_tamper",
+    "hypothesis_name": "Hypothesis B: Test Suite Modification Bypass (Lucky Pass)",
+    "worktree_name": "worktree_b_adapter",
+    "verdict": "LUCKY_PASS_BLOCKED",
+    "files_modified": [
+      "target_app/tests/test_processor.py"
+    ],
+    "error_summary": "SECURITY_VIOLATION: LUCKY_PASS_ATTEMPT: Candidate modified test assertions.",
+    "lessons_learned": "Attempting to modify existing test assertions is caught by Read-Only Sandbox Guardrail. Modify implementation code instead.",
+    "timestamp_unix": 1793466618.7125561
+  },
+  {
+    "trajectory_id": "TRAJ-STRATEGY-18957",
+    "strategy_id": "strategy_surgical_ast_fix",
+    "hypothesis_name": "Hypothesis A: Multi-File Invariant & Schema Refactor",
+    "worktree_name": "worktree_a_refactor",
+    "verdict": "PASSED",
+    "files_modified": [
+      "target_app/processor.py",
+      "target_app/validators.py"
+    ],
+    "error_summary": "....\n----------------------------------------------------------------------\nRan 4 tests in 0.001s\n\nOK\n",
+    "lessons_learned": "Surgical multi-file AST bounds and backward-compatible tier schema successfully heal the crash without regressions.",
+    "timestamp_unix": 1793466618.9576492
+  },
+  {
+    "trajectory_id": "TRAJ-STRATEGY-19254",
+    "strategy_id": "strategy_brute_force_try_except",
+    "hypothesis_name": "Hypothesis C: Blanket Defensive Exception Swallowing",
+    "worktree_name": "worktree_c_guard",
+    "verdict": "FAILED_TESTS",
+    "files_modified": [
+      "target_app/processor.py"
+    ],
+    "error_summary": "TESTS_FAILED: Exit code 1",
+    "lessons_learned": "Defensive exception suppression without root-cause schema resolution leads to high latency or functional failure.",
+    "timestamp_unix": 1793466619.254136
+  },
+  {
+    "trajectory_id": "TRAJ-STRATEGY-21996",
+    "strategy_id": "strategy_lucky_pass_tamper",
+    "hypothesis_name": "Hypothesis B: Test Suite Modification Bypass (Lucky Pass)",
+    "worktree_name": "worktree_b_adapter",
+    "verdict": "LUCKY_PASS_BLOCKED",
+    "files_modified": [
+      "target_app/tests/test_processor.py"
+    ],
+    "error_summary": "SECURITY_VIOLATION: LUCKY_PASS_ATTEMPT: Candidate modified test assertions.",
+    "lessons_learned": "Attempting to modify existing test assertions is caught by Read-Only Sandbox Guardrail. Modify implementation code instead.",
+    "timestamp_unix": 1793466621.9961636
+  },
+  {
+    "trajectory_id": "TRAJ-STRATEGY-23087",
+    "strategy_id": "strategy_brute_force_try_except",
+    "hypothesis_name": "Hypothesis C: Blanket Defensive Exception Swallowing",
+    "worktree_name": "worktree_c_guard",
+    "verdict": "FAILED_TESTS",
+    "files_modified": [
+      "target_app/processor.py"
+    ],
+    "error_summary": "TESTS_FAILED: Exit code 1",
+    "lessons_learned": "Defensive exception suppression without root-cause schema resolution leads to high latency or functional failure.",
+    "timestamp_unix": 1793466623.087364
+  },
+  {
+    "trajectory_id": "TRAJ-STRATEGY-23626",
+    "strategy_id": "strategy_surgical_ast_fix",
+    "hypothesis_name": "Hypothesis A: Multi-File Invariant & Schema Refactor",
+    "worktree_name": "worktree_a_refactor",
+    "verdict": "PASSED",
+    "files_modified": [
+      "target_app/processor.py",
+      "target_app/validators.py"
+    ],
+    "error_summary": "....\n----------------------------------------------------------------------\nRan 4 tests in 0.001s\n\nOK\n",
+    "lessons_learned": "Surgical multi-file AST bounds and backward-compatible tier schema successfully heal the crash without regressions.",
+    "timestamp_unix": 1793466623.6267536
+  },
+  {
+    "trajectory_id": "TRAJ-STRATEGY-68007",
+    "strategy_id": "strategy_lucky_pass_tamper",
+    "hypothesis_name": "Hypothesis B: Test Suite Modification Bypass (Lucky Pass)",
+    "worktree_name": "worktree_b_adapter",
+    "verdict": "LUCKY_PASS_BLOCKED",
+    "files_modified": [
+      "target_app/tests/test_processor.py"
+    ],
+    "error_summary": "SECURITY_VIOLATION: LUCKY_PASS_ATTEMPT: Candidate modified test assertions.",
+    "lessons_learned": "Attempting to modify existing test assertions is caught by Read-Only Sandbox Guardrail. Modify implementation code instead.",
+    "timestamp_unix": 1793466668.007935
+  },
+  {
+    "trajectory_id": "TRAJ-STRATEGY-68236",
+    "strategy_id": "strategy_surgical_ast_fix",
+    "hypothesis_name": "Hypothesis A: Multi-File Invariant & Schema Refactor",
+    "worktree_name": "worktree_a_refactor",
+    "verdict": "PASSED",
+    "files_modified": [
+      "target_app/processor.py",
+      "target_app/validators.py"
+    ],
+    "error_summary": "....\n----------------------------------------------------------------------\nRan 4 tests in 0.001s\n\nOK\n",
+    "lessons_learned": "Surgical multi-file AST bounds and backward-compatible tier schema successfully heal the crash without regressions.",
+    "timestamp_unix": 1793466668.2366152
+  },
+  {
+    "trajectory_id": "TRAJ-STRATEGY-68389",
+    "strategy_id": "strategy_brute_force_try_except",
+    "hypothesis_name": "Hypothesis C: Blanket Defensive Exception Swallowing",
+    "worktree_name": "worktree_c_guard",
+    "verdict": "FAILED_TESTS",
+    "files_modified": [
+      "target_app/processor.py"
+    ],
+    "error_summary": "TESTS_FAILED: Exit code 1",
+    "lessons_learned": "Defensive exception suppression without root-cause schema resolution leads to high latency or functional failure.",
+    "timestamp_unix": 1793466668.389515
+  }
+]

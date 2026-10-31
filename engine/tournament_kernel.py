@@ -233,3 +233,4 @@ class PatchTournamentKernel:
             z3_proof_result=formal_z3,
             total_candidates_evaluated=len(scorecards),
         )
+

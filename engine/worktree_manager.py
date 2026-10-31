@@ -25,6 +25,24 @@ from mcp_server.ast_graph_mcp import ASTSubGraphResponse, SyscallTelemetry
 from sandbox.sandbox_runner import SandboxRunResult, SandboxRunner, ShadowTrafficMetrics, ShadowTrafficReplayEngine
 
 
+def _remove_readonly(func, path, excinfo):
+    import stat
+    try:
+        os.chmod(path, stat.S_IWRITE)
+        func(path)
+    except Exception:
+        pass
+
+
+def _safe_rmtree(target: Path):
+    if not target.exists():
+        return
+    try:
+        shutil.rmtree(target, onerror=_remove_readonly)
+    except Exception:
+        pass
+
+
 class WorktreeExecutionOutcome(BaseModel):
     strategy_id: str
     hypothesis_name: str
@@ -78,7 +96,7 @@ class WorktreeManager:
         if wt_path.exists():
             self._run_git_command(["worktree", "remove", "--force", str(wt_path)])
             if wt_path.exists():
-                shutil.rmtree(wt_path, ignore_errors=True)
+                _safe_rmtree(wt_path)
 
         self._run_git_command(["branch", "-D", branch_name])
         self.worktree_base_dir.mkdir(parents=True, exist_ok=True)
@@ -254,3 +272,4 @@ class WorktreeManager:
             winner_outcome=winner,
             total_race_duration_ms=total_duration,
         )
+

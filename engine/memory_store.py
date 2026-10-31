@@ -96,3 +96,4 @@ class TrajectoryMemoryStore:
     def is_known_dead_end(self, strategy_id: str) -> bool:
         """Checks if a strategy has already failed in the past."""
         return strategy_id in self.get_failed_strategies()
+

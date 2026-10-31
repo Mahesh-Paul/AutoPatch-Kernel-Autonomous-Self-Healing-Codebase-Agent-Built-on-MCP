@@ -34,3 +34,8 @@ Thumbs.db
 *.sln
 *.sw?
 
+# AutoPatch worktrees
+.autopatch/worktrees/
+.autopatch/*.tmp
+
+
