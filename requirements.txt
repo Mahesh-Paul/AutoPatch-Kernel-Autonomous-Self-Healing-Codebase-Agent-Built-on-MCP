@@ -1,0 +1,13 @@
+# AutoPatch-Kernel Core Dependencies
+pydantic>=2.5.0
+fastapi>=0.100.0
+uvicorn>=0.23.0
+rich>=13.0.0
+httpx>=0.25.0
+python-dotenv>=1.0.0
+pytest>=7.4.0
+z3-solver>=4.12.0
+mcp>=1.0.0
+modal>=0.60.0
+GitPython>=3.1.40
+networkx>=3.0
