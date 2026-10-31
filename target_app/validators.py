@@ -48,3 +48,4 @@ def calculate_tax_bracket(amount: float, jurisdiction: str) -> float:
     """Computes applicable sales/VAT tax for the designated jurisdiction."""
     rate = JURISDICTION_TAX_RATES.get(jurisdiction, JURISDICTION_TAX_RATES["GLOBAL-DEFAULT"])
     return round(amount * rate, 2)
+

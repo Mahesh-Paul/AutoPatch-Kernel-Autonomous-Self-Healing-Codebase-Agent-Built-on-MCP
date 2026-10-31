@@ -496,3 +496,4 @@ class AutoPatchMCPServer:
             return res.model_dump()
         else:
             raise ValueError(f"Unknown MCP tool requested: {tool_name}")
+
