@@ -325,3 +325,4 @@ Generate 3 competing patch strategies in structured JSON.
         )
 
         return [candidate_a, candidate_b, candidate_c]
+
