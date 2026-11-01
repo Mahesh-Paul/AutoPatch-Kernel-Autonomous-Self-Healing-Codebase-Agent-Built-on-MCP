@@ -84,13 +84,13 @@ flowchart TD
 ================================================================================
                     MICROSOFT Z3 SMT FORMAL VERIFICATION CERTIFICATE
 ================================================================================
-Certificate ID     : Z3-PROVEN-2439e43b1245c931
-Verification Time  : 1793466668.4186492
+Certificate ID     : Z3-PROVEN-6ab86b9a150ecd8d
+Verification Time  : 1793500692.497962
 Target Function    : target_app.processor.calculate_discount
 Theorem Verdict    : UNSAT_PROVEN_SAFE
 Mathematical Proof : UNSAT (Negation of safety invariants is provably unsatisfiable)
 Solver Version     : (5, 3, 3, 0)
-SHA-256 Digest     : 722f7c51d862d59951bc7dd69ffd6e8065b609995d592ec9dd83cfcefd8b5942
+SHA-256 Digest     : 2c57a39742d6d4846f0386b30b0144ac76fff4bc035d144c7313460d657bba3d
 --------------------------------------------------------------------------------
 FORMAL PRE-CONDITIONS (Phi_pre):
   [+] order_total > 0
