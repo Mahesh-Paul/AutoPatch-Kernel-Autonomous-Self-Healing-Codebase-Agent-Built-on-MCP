@@ -1,8 +1,9 @@
-"""Meta Open-Weight Model Router & 100% Free Local Inference Engine.
+"""Meta Open-Weight Model Router & Free Local Inference Orchestration Engine.
 
-Routes reasoning tasks to local open-weight Meta models (Muse Glimmer and Muse Spark Open)
-hosted via Ollama or vLLM without requiring paid API keys or external cloud dependencies.
-Includes an instant deterministic offline fallback for offline hackathon judging.
+Routes reasoning, fault classification, and code mutation tasks to local open-weight
+Meta models (Muse Glimmer and Muse Spark Open) hosted via Ollama or vLLM runtimes without
+requiring paid API credentials or external cloud connectivity. Provides an instant,
+fully deterministic offline fallback for air-gapped environments and CI execution.
 """
 from __future__ import annotations
 
@@ -24,6 +25,7 @@ from mcp_server.ast_graph_mcp import ASTSubGraphResponse, SyscallTelemetry
 # ==============================================================================
 
 class ModelTarget(BaseModel):
+    """Configuration descriptor for a target inference backend runtime."""
     name: str
     backend: Literal["ollama", "vllm", "offline_deterministic"]
     endpoint: str
@@ -32,6 +34,7 @@ class ModelTarget(BaseModel):
 
 
 class FilePatch(BaseModel):
+    """Specific single-file structural code mutation specification."""
     relative_path: str
     original_snippet: str
     patched_snippet: str
@@ -40,6 +43,7 @@ class FilePatch(BaseModel):
 
 
 class ModelPatchCandidate(BaseModel):
+    """Complete candidate repair hypothesis spanning one or more file mutations."""
     strategy_id: str
     hypothesis_name: str
     target_worktree: str
@@ -51,6 +55,7 @@ class ModelPatchCandidate(BaseModel):
 
 
 class MetaModelRouterConfig(BaseModel):
+    """Operational parameters for the local open-weight model router."""
     mode: Literal["local_free", "offline_deterministic", "custom_endpoint"] = "local_free"
     ollama_base_url: str = "http://localhost:11434/v1"
     vllm_base_url: str = "http://localhost:8000/v1"
@@ -58,6 +63,16 @@ class MetaModelRouterConfig(BaseModel):
     reasoning_model: str = "muse-spark-open"  # Deep: Llama 3.3 70B / 3.1 8B
     max_tokens: int = 2048
     enable_deterministic_fallback: bool = True
+
+
+def _probe_http_service_health(service_url: str, probe_timeout_seconds: float = 1.5) -> bool:
+    """Probes a local REST endpoint using an ephemeral HTTP client with aggressive timeouts."""
+    try:
+        with httpx.Client(timeout=probe_timeout_seconds) as ephemeral_client:
+            service_response = ephemeral_client.get(service_url)
+            return service_response.status_code == 200
+    except Exception:
+        return False
 
 
 # ==============================================================================
@@ -83,30 +98,18 @@ class MetaModelRouter:
 
     def check_endpoint_health(self) -> Dict[str, Any]:
         """Probes local Ollama and vLLM server endpoints to verify availability."""
-        health = {
+        ollama_tags_endpoint = f"{self.config.ollama_base_url.replace('/v1', '')}/api/tags"
+        vllm_models_endpoint = f"{self.config.vllm_base_url}/models"
+
+        is_ollama_reachable = _probe_http_service_health(ollama_tags_endpoint)
+        is_vllm_reachable = _probe_http_service_health(vllm_models_endpoint)
+
+        return {
             "mode": self.config.mode,
-            "ollama_available": False,
-            "vllm_available": False,
+            "ollama_available": is_ollama_reachable,
+            "vllm_available": is_vllm_reachable,
             "offline_fallback_ready": self.config.enable_deterministic_fallback,
         }
-
-        # Check Ollama
-        try:
-            with httpx.Client(timeout=1.5) as client:
-                res = client.get(f"{self.config.ollama_base_url.replace('/v1', '')}/api/tags")
-                health["ollama_available"] = res.status_code == 200
-        except Exception:
-            health["ollama_available"] = False
-
-        # Check vLLM
-        try:
-            with httpx.Client(timeout=1.5) as client:
-                res = client.get(f"{self.config.vllm_base_url}/models")
-                health["vllm_available"] = res.status_code == 200
-        except Exception:
-            health["vllm_available"] = False
-
-        return health
 
     def synthesize_competing_hypotheses(
         self,
@@ -119,16 +122,17 @@ class MetaModelRouter:
         2. Worktree B (strategy_lucky_pass_tamper): Naive patch tampering with unit tests.
         3. Worktree C (strategy_brute_force_try_except): Blanket try/except guard with latency overhead.
         """
-        endpoint_status = self.check_endpoint_health()
+        backend_health_status = self.check_endpoint_health()
 
-        # If local Ollama or vLLM is active, attempt local model inference
-        if endpoint_status["ollama_available"] or endpoint_status["vllm_available"]:
+        # If a live local Ollama or vLLM daemon is reachable, dispatch prompt for runtime inference
+        if backend_health_status["ollama_available"] or backend_health_status["vllm_available"]:
             try:
-                candidates = self._query_local_model(ast_subgraph, telemetry)
-                if candidates and len(candidates) >= 3:
-                    return candidates
+                synthesized_model_candidates = self._query_local_model(ast_subgraph, telemetry)
+                if synthesized_model_candidates and len(synthesized_model_candidates) >= 3:
+                    return synthesized_model_candidates
             except Exception:
-                pass  # Fallback smoothly to deterministic generator
+                # Smoothly fall back to deterministic generation if runtime generation times out
+                pass
 
         # Deterministic offline engine (100% Free, zero latency, zero cloud dependency)
         return self._generate_deterministic_candidates(ast_subgraph, telemetry)
@@ -139,10 +143,10 @@ class MetaModelRouter:
         telemetry: SyscallTelemetry,
     ) -> List[ModelPatchCandidate]:
         """Dispatches prompts to local Ollama/vLLM instance running Muse Spark Open."""
-        prompt = self._construct_synthesis_prompt(ast_subgraph, telemetry)
-        endpoint = f"{self.config.ollama_base_url}/chat/completions"
+        formatted_prompt = self._construct_synthesis_prompt(ast_subgraph, telemetry)
+        chat_completion_endpoint = f"{self.config.ollama_base_url}/chat/completions"
 
-        payload = {
+        inference_request_envelope = {
             "model": self.config.reasoning_model,
             "messages": [
                 {
@@ -152,24 +156,26 @@ class MetaModelRouter:
                         "You must output valid JSON containing 3 distinct candidate patch strategies."
                     ),
                 },
-                {"role": "user", "content": prompt},
+                {"role": "user", "content": formatted_prompt},
             ],
             "temperature": 0.2,
             "max_tokens": self.config.max_tokens,
             "response_format": {"type": "json_object"},
         }
 
-        with httpx.Client(timeout=20.0) as client:
-            response = client.post(endpoint, json=payload)
-            response.raise_for_status()
-            data = response.json()
-            raw_content = data["choices"][0]["message"]["content"]
-            parsed = json.loads(raw_content)
+        with httpx.Client(timeout=20.0) as http_inference_client:
+            raw_response = http_inference_client.post(
+                chat_completion_endpoint, json=inference_request_envelope
+            )
+            raw_response.raise_for_status()
+            completion_payload = raw_response.json()
+            raw_json_content = completion_payload["choices"][0]["message"]["content"]
+            parsed_manifest = json.loads(raw_json_content)
 
-            candidates: List[ModelPatchCandidate] = []
-            for item in parsed.get("candidates", []):
-                candidates.append(ModelPatchCandidate.model_validate(item))
-            return candidates
+            extracted_candidates: List[ModelPatchCandidate] = []
+            for candidate_record in parsed_manifest.get("candidates", []):
+                extracted_candidates.append(ModelPatchCandidate.model_validate(candidate_record))
+            return extracted_candidates
 
     def _construct_synthesis_prompt(
         self,
@@ -189,10 +195,10 @@ Source Slice:
 {ast_subgraph.focal_node.source_slice}
 
 Upstream Callers:
-{[c.name for c in ast_subgraph.upstream_callers]}
+{[caller.name for caller in ast_subgraph.upstream_callers]}
 
 Downstream Callees:
-{[c.name for c in ast_subgraph.downstream_callees]}
+{[callee.name for callee in ast_subgraph.downstream_callees]}
 
 Generate 3 competing patch strategies in structured JSON.
 """
@@ -325,4 +331,3 @@ Generate 3 competing patch strategies in structured JSON.
         )
 
         return [candidate_a, candidate_b, candidate_c]
-

@@ -1,4 +1,4 @@
-"""Target Application - Core Payment Order Processing Engine."""
+"""Target Application — Core Payment Order Processing Engine."""
 from typing import Dict, Any
 from target_app.config import MAX_DISCOUNT_SLOTS, MAX_ALLOWABLE_DISCOUNT_PERCENT
 from target_app.validators import (
@@ -28,7 +28,7 @@ def calculate_discount(
     return calculated_discount
 
 
-def process_payment_order(order_payload: Dict[str, Any]) -> Dict[str, Any]:
+def process_payment_order(inbound_order_envelope: Dict[str, Any]) -> Dict[str, Any]:
     """Processes, validates, and calculates final invoice amounts for a customer order.
 
     Workflow:
@@ -39,36 +39,39 @@ def process_payment_order(order_payload: Dict[str, Any]) -> Dict[str, Any]:
     5. Jurisdiction tax calculation (validators.calculate_tax_bracket)
     """
     # 1. Validate Schema
-    validated_order = validate_order_schema(order_payload)
+    validated_order_record = validate_order_schema(inbound_order_envelope)
 
     # 2. Extract Customer Loyalty Tier (Fails on modern API v2 payloads)
-    customer_info = validated_order["customer"]
-    tier_multiplier = extract_tier_multiplier(customer_info)
+    customer_account_profile = validated_order_record["customer"]
+    loyalty_tier_multiplier = extract_tier_multiplier(customer_account_profile)
 
-    # 3. Calculate Subtotal
-    items = validated_order["items"]
-    subtotal = sum(float(item["price"]) * int(item["quantity"]) for item in items)
-    subtotal = round(subtotal, 2)
+    # 3. Calculate Subtotal across line items
+    cart_item_manifest = validated_order_record["items"]
+    itemized_gross_subtotal = sum(
+        float(cart_line["price"]) * int(cart_line["quantity"]) for cart_line in cart_item_manifest
+    )
+    itemized_gross_subtotal = round(itemized_gross_subtotal, 2)
 
-    # 4. Compute Discounts (Fails on boundary promo slots)
-    active_promos_count = int(validated_order.get("active_promos_count", 0))
-    discount_amount = calculate_discount(subtotal, tier_multiplier, active_promos_count)
+    # 4. Compute Promotional Discounts (Fails on boundary promo slots)
+    active_promotions_count = int(validated_order_record.get("active_promos_count", 0))
+    deducted_discount_amount = calculate_discount(
+        itemized_gross_subtotal, loyalty_tier_multiplier, active_promotions_count
+    )
 
-    net_total = max(0.0, round(subtotal - discount_amount, 2))
+    discounted_net_base = max(0.0, round(itemized_gross_subtotal - deducted_discount_amount, 2))
 
-    # 5. Compute Jurisdiction Tax
-    jurisdiction = validated_order.get("jurisdiction", "GLOBAL-DEFAULT")
-    tax_amount = calculate_tax_bracket(net_total, jurisdiction)
+    # 5. Compute Jurisdiction Tax Liability
+    settlement_jurisdiction = validated_order_record.get("jurisdiction", "GLOBAL-DEFAULT")
+    statutory_tax_amount = calculate_tax_bracket(discounted_net_base, settlement_jurisdiction)
 
-    final_total = round(net_total + tax_amount, 2)
+    settlement_aggregate_total = round(discounted_net_base + statutory_tax_amount, 2)
 
     return {
-        "order_id": validated_order["order_id"],
-        "subtotal": subtotal,
-        "discount_applied": discount_amount,
-        "net_total": net_total,
-        "tax": tax_amount,
-        "final_total": final_total,
+        "order_id": validated_order_record["order_id"],
+        "subtotal": itemized_gross_subtotal,
+        "discount_applied": deducted_discount_amount,
+        "net_total": discounted_net_base,
+        "tax": statutory_tax_amount,
+        "final_total": settlement_aggregate_total,
         "status": "APPROVED",
     }
-

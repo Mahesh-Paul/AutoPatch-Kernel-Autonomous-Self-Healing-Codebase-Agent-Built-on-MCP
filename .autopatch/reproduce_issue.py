@@ -41,6 +41,9 @@ if __name__ == "__main__":
     try:
         run_reproduction_cases()
         sys.exit(0)
-    except Exception as e:
-        print(f"[REPRODUCER_CRASH] {type(e).__name__}: {str(e)}", file=sys.stderr)
+    except Exception as runtime_fault_instance:
+        print(
+            f"[REPRODUCER_CRASH] {type(runtime_fault_instance).__name__}: {str(runtime_fault_instance)}",
+            file=sys.stderr,
+        )
         sys.exit(1)

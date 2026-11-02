@@ -1,9 +1,9 @@
-"""AutoPatch-Kernel - Hardcore Minimalist Terminal UI (TUI) Agent.
+"""AutoPatch-Kernel — Hardcore Minimalist Terminal UI (TUI) Agent.
 
-A developer-first, streaming CLI for autonomous codebase healing.
+A developer-first, high-throughput streaming CLI for autonomous codebase self-healing.
 Features:
-- Live streaming execution log (Docker/GitHub Actions aesthetic).
-- Raw AST code slice rendering via syntax highlighting (no heavy box frames).
+- Live streaming execution log (Docker/GitHub Actions terminal aesthetic).
+- Raw AST code slice rendering via syntax highlighting with Zero bloat.
 - Multi-worktree parallel race tracker with Read-Only Guardrail interception.
 - Z3 SMT formal proof certificate and clean green build verification.
 """
@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-# Force UTF-8 encoding on Windows terminal
+# Force UTF-8 encoding across Windows terminal sessions
 if sys.platform == "win32":
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -33,10 +33,10 @@ from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
-# Path setup
-WORKSPACE_ROOT = Path(__file__).parent.resolve()
-if str(WORKSPACE_ROOT) not in sys.path:
-    sys.path.insert(0, str(WORKSPACE_ROOT))
+# Repository Workspace Path Anchor
+PROJECT_WORKSPACE_ROOT = Path(__file__).parent.resolve()
+if str(PROJECT_WORKSPACE_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_WORKSPACE_ROOT))
 
 from engine.tournament_kernel import PatchTournamentKernel
 from engine.worktree_manager import WorktreeManager
@@ -45,211 +45,288 @@ from mcp_server.ast_graph_mcp import ASTCallGraphEngine, SyscallTelemetryEngine
 from verification.z3_verifier import Z3TheoremProver
 
 
-console = Console(highlight=False)
+terminal_console = Console(highlight=False)
 
 
-def get_timestamp() -> str:
-    """Returns current wall-clock timestamp string."""
+def _retrieve_wall_clock_time() -> str:
+    """Returns the current formatted wall-clock timestamp string."""
     return time.strftime("%H:%M:%S")
 
 
-def log_event(level: str, message: str, dim: bool = False):
-    """Prints a minimalist streaming log event."""
-    ts = f"[dim]{get_timestamp()}[/dim]"
-    if level == "INFO":
-        tag = "[bold cyan]INFO [/bold cyan]"
-    elif level == "CRASH":
-        tag = "[bold red]CRASH[/bold red]"
-    elif level == "AST":
-        tag = "[bold magenta]AST  [/bold magenta]"
-    elif level == "RACE":
-        tag = "[bold blue]RACE [/bold blue]"
-    elif level == "GUARD":
-        tag = "[bold red]GUARD[/bold red]"
-    elif level == "PROOF":
-        tag = "[bold cyan]PROOF[/bold cyan]"
-    elif level == "DONE":
-        tag = "[bold green]DONE [/bold green]"
-    elif level == "WARN":
-        tag = "[bold yellow]WARN [/bold yellow]"
+def emit_diagnostic_event(
+    log_level_tag: str,
+    log_message: str,
+    render_dimmed: bool = False,
+    dim: Optional[bool] = None,
+) -> None:
+    """Emits a minimalist, streaming log event adhering to CI/CD pipeline aesthetics."""
+    effective_dim = dim if dim is not None else render_dimmed
+    formatted_timestamp = f"[dim]{_retrieve_wall_clock_time()}[/dim]"
+    if log_level_tag == "INFO":
+        diagnostic_log_badge = "[bold cyan]INFO [/bold cyan]"
+    elif log_level_tag == "CRASH":
+        diagnostic_log_badge = "[bold red]CRASH[/bold red]"
+    elif log_level_tag == "AST":
+        diagnostic_log_badge = "[bold magenta]AST  [/bold magenta]"
+    elif log_level_tag == "RACE":
+        diagnostic_log_badge = "[bold blue]RACE [/bold blue]"
+    elif log_level_tag == "GUARD":
+        diagnostic_log_badge = "[bold red]GUARD[/bold red]"
+    elif log_level_tag == "PROOF":
+        diagnostic_log_badge = "[bold cyan]PROOF[/bold cyan]"
+    elif log_level_tag == "DONE":
+        diagnostic_log_badge = "[bold green]DONE [/bold green]"
+    elif log_level_tag == "WARN":
+        diagnostic_log_badge = "[bold yellow]WARN [/bold yellow]"
     else:
-        tag = f"[bold]{level:<5}[/bold]"
+        diagnostic_log_badge = f"[bold]{log_level_tag:<5}[/bold]"
 
-    msg = f"[dim]{message}[/dim]" if dim else message
-    console.print(f"{ts}  {tag}  {msg}")
+    rendered_message_text = f"[dim]{log_message}[/dim]" if effective_dim else log_message
+    terminal_console.print(f"{formatted_timestamp}  {diagnostic_log_badge}  {rendered_message_text}")
 
 
-def run_interactive_cli(auto_pilot: bool = False, prompt_override: Optional[str] = None):
+# Backward-compatible alias for unit test harness
+log_event = emit_diagnostic_event
+
+
+def run_interactive_cli(auto_pilot: bool = False, prompt_override: Optional[str] = None) -> None:
     """Executes the hardcore minimalist developer terminal workflow."""
-    console.print()
-    console.print("[bold cyan]AUTOPATCH-KERNEL[/bold cyan] [dim]v1.4 // AUTONOMOUS REPAIR KERNEL // MODEL CONTEXT PROTOCOL[/dim]")
-    console.print("[dim]Target: target_app/ (Financial Payment Order Engine)[/dim]")
-    console.print()
+    terminal_console.print()
+    terminal_console.print(
+        "[bold cyan]AUTOPATCH-KERNEL[/bold cyan] [dim]v1.4 // AUTONOMOUS REPAIR KERNEL // MODEL CONTEXT PROTOCOL[/dim]"
+    )
+    terminal_console.print("[dim]Target: target_app/ (Financial Payment Order Engine)[/dim]")
+    terminal_console.print()
 
-    # Step 0: Minimalist Command Prompt
+    # Step 0: Command-Line Prompt Ingestion
     if auto_pilot or prompt_override:
-        cmd_text = prompt_override or "heal payment processor division by zero and customer tier KeyError"
-        console.print(f"[bold cyan]autopatch-kernel[/bold cyan] [dim]~ $[/dim] {cmd_text}")
+        active_command_instruction = (
+            prompt_override or "heal payment processor division by zero and customer tier KeyError"
+        )
+        terminal_console.print(
+            f"[bold cyan]autopatch-kernel[/bold cyan] [dim]~ $[/dim] {active_command_instruction}"
+        )
     else:
-        cmd_text = Prompt.ask(
+        active_command_instruction = Prompt.ask(
             "[bold cyan]autopatch-kernel[/bold cyan] [dim]~ $[/dim]",
             default="heal payment processor division by zero and customer tier KeyError",
         )
 
-    console.print()
-    start_time = time.perf_counter()
+    terminal_console.print()
+    workflow_execution_clock_start = time.perf_counter()
 
-    # Step 1: Real Subprocess Crash Capture
-    log_event("INFO", "Running initial test suite verification...")
-    test_cmd = f'"{sys.executable}" -m unittest target_app/tests/test_processor.py'
-    telemetry = SyscallTelemetryEngine.capture(command=test_cmd, cwd=str(WORKSPACE_ROOT))
+    # Step 1: Real Subprocess Telemetry and Traceback Capture
+    emit_diagnostic_event("INFO", "Running initial test suite verification...")
+    baseline_test_command = f'"{sys.executable}" -m unittest target_app/tests/test_processor.py'
+    runtime_syscall_telemetry = SyscallTelemetryEngine.capture(
+        command=baseline_test_command, cwd=str(PROJECT_WORKSPACE_ROOT)
+    )
 
-    if telemetry.exit_code != 0:
-        log_event("CRASH", f"Test execution failed with exit code {telemetry.exit_code}")
-        for exc in telemetry.detected_exceptions:
-            log_event("CRASH", f"Exception caught: [bold red]{exc}[/bold red]")
-        if telemetry.primary_failure_frame:
-            pf = telemetry.primary_failure_frame
-            rel_path = os.path.relpath(pf.file_path, str(WORKSPACE_ROOT))
-            log_event("CRASH", f"Primary stack frame: [yellow]{rel_path}:{pf.line_number}[/yellow] in [bold]{pf.function_name}()[/bold]")
+    if runtime_syscall_telemetry.exit_code != 0:
+        emit_diagnostic_event(
+            "CRASH", f"Test execution failed with exit code {runtime_syscall_telemetry.exit_code}"
+        )
+        for detected_exception_name in runtime_syscall_telemetry.detected_exceptions:
+            emit_diagnostic_event(
+                "CRASH", f"Exception caught: [bold red]{detected_exception_name}[/bold red]"
+            )
+        if runtime_syscall_telemetry.primary_failure_frame:
+            failing_frame_descriptor = runtime_syscall_telemetry.primary_failure_frame
+            relative_failing_path = os.path.relpath(
+                failing_frame_descriptor.file_path, str(PROJECT_WORKSPACE_ROOT)
+            )
+            emit_diagnostic_event(
+                "CRASH",
+                f"Primary stack frame: [yellow]{relative_failing_path}:{failing_frame_descriptor.line_number}[/yellow] "
+                f"in [bold]{failing_frame_descriptor.function_name}()[/bold]",
+            )
     else:
-        log_event("INFO", "Target application tests already passing.")
+        emit_diagnostic_event("INFO", "Target application tests already passing.")
         return
 
-    console.print()
+    terminal_console.print()
 
     # Step 2: AST 2-Hop Call-Graph MCP Slicing
-    log_event("AST", "Querying AST 2-Hop Call-Graph MCP Server...")
-    ast_engine = ASTCallGraphEngine(str(WORKSPACE_ROOT))
-    processor_file = str(WORKSPACE_ROOT / "target_app" / "processor.py")
-    subgraph = ast_engine.extract_subgraph(processor_file, line_number=26, hop_depth=2)
+    emit_diagnostic_event("AST", "Querying AST 2-Hop Call-Graph MCP Server...")
+    ast_callgraph_engine = ASTCallGraphEngine(str(PROJECT_WORKSPACE_ROOT))
+    processor_source_path = str(PROJECT_WORKSPACE_ROOT / "target_app" / "processor.py")
+    callgraph_subgraph = ast_callgraph_engine.extract_subgraph(
+        processor_source_path, line_number=26, hop_depth=2
+    )
 
-    log_event("AST", f"Isolated focal node: [bold]{subgraph.focal_node.name}[/bold] (Lines {subgraph.focal_node.start_line}-{subgraph.focal_node.end_line})")
-    log_event("AST", f"Upstream callers: [dim]{[c.name for c in subgraph.upstream_callers]}[/dim]")
-    log_event("AST", f"Downstream callees: [dim]{[c.name for c in subgraph.downstream_callees]}[/dim]")
-    console.print()
+    emit_diagnostic_event(
+        "AST",
+        f"Isolated focal node: [bold]{callgraph_subgraph.focal_node.name}[/bold] "
+        f"(Lines {callgraph_subgraph.focal_node.start_line}-{callgraph_subgraph.focal_node.end_line})",
+    )
+    emit_diagnostic_event(
+        "AST",
+        f"Upstream callers: [dim]{[caller.name for caller in callgraph_subgraph.upstream_callers]}[/dim]",
+    )
+    emit_diagnostic_event(
+        "AST",
+        f"Downstream callees: [dim]{[callee.name for callee in callgraph_subgraph.downstream_callees]}[/dim]",
+    )
+    terminal_console.print()
 
-    # Clean Code Slice Display (No bloated UI cards)
-    console.print(f"[dim]# --- Sliced AST Neighborhood: target_app/processor.py ---[/dim]")
-    syntax_view = Syntax(
-        subgraph.focal_node.source_slice,
+    # Render Clean Code Slice
+    terminal_console.print(f"[dim]# --- Sliced AST Neighborhood: target_app/processor.py ---[/dim]")
+    highlighted_syntax_view = Syntax(
+        callgraph_subgraph.focal_node.source_slice,
         "python",
         theme="monokai",
         line_numbers=True,
-        start_line=subgraph.focal_node.start_line,
+        start_line=callgraph_subgraph.focal_node.start_line,
     )
-    console.print(syntax_view)
-    console.print(f"[dim]# ---------------------------------------------------------[/dim]")
-    console.print()
+    terminal_console.print(highlighted_syntax_view)
+    terminal_console.print(f"[dim]# ---------------------------------------------------------[/dim]")
+    terminal_console.print()
 
     # Step 3: Speculative Git Worktree Tournament Racing
-    log_event("RACE", "Spawning 3 concurrent isolated Git worktrees (.autopatch/worktrees/)...")
-    wt_manager = WorktreeManager(str(WORKSPACE_ROOT))
+    emit_diagnostic_event("RACE", "Spawning 3 concurrent isolated Git worktrees (.autopatch/worktrees/)...")
+    worktree_tournament_manager = WorktreeManager(str(PROJECT_WORKSPACE_ROOT))
 
     with Progress(
         SpinnerColumn(style="cyan"),
         TextColumn("[progress.description]{task.description}"),
         BarColumn(bar_width=25, style="dim", complete_style="cyan"),
         TimeElapsedColumn(),
-        console=console,
+        console=terminal_console,
         transient=True,
-    ) as progress:
-        task = progress.add_task("[cyan]Evaluating parallel worktree repair hypotheses...", total=3)
-        race_res = wt_manager.race_competing_hypotheses(subgraph, telemetry)
-        progress.update(task, completed=3)
+    ) as tournament_progress:
+        race_progress_task = tournament_progress.add_task(
+            "[cyan]Evaluating parallel worktree repair hypotheses...", total=3
+        )
+        tournament_race_outcomes = worktree_tournament_manager.race_competing_hypotheses(
+            callgraph_subgraph, runtime_syscall_telemetry
+        )
+        tournament_progress.update(race_progress_task, completed=3)
 
-    for o in race_res.outcomes:
-        if o.sandbox_result and o.sandbox_result.lucky_pass_blocked:
-            log_event(
+    for tournament_candidate_outcome in tournament_race_outcomes.outcomes:
+        if (
+            tournament_candidate_outcome.sandbox_result
+            and tournament_candidate_outcome.sandbox_result.lucky_pass_blocked
+        ):
+            emit_diagnostic_event(
                 "GUARD",
-                f"[bold red]{o.worktree_name:<20}[/bold red] [red][SECURITY BLOCKED][/red] Attempted test file tampering! Disqualified (0.0/100)",
+                f"[bold red]{tournament_candidate_outcome.worktree_name:<20}[/bold red] "
+                f"[red][SECURITY BLOCKED][/red] Attempted test file tampering! Disqualified (0.0/100)",
             )
-        elif o.sandbox_result and o.sandbox_result.tests_passed:
-            log_event(
+        elif (
+            tournament_candidate_outcome.sandbox_result
+            and tournament_candidate_outcome.sandbox_result.tests_passed
+        ):
+            emit_diagnostic_event(
                 "RACE",
-                f"[bold green]{o.worktree_name:<20}[/bold green] [green][VERIFIED CLEAN][/green] Passed tests under Read-Only Guardrail",
+                f"[bold green]{tournament_candidate_outcome.worktree_name:<20}[/bold green] "
+                f"[green][VERIFIED CLEAN][/green] Passed tests under Read-Only Guardrail",
             )
         else:
-            log_event(
+            emit_diagnostic_event(
                 "WARN",
-                f"[bold yellow]{o.worktree_name:<20}[/bold yellow] [yellow][SLOW / SUBOPTIMAL][/yellow] Defensive exception wrapper penalized",
+                f"[bold yellow]{tournament_candidate_outcome.worktree_name:<20}[/bold yellow] "
+                f"[yellow][SLOW / SUBOPTIMAL][/yellow] Defensive exception wrapper penalized",
             )
 
-    console.print()
+    terminal_console.print()
 
-    # Step 4: Microsoft Z3 SMT Formal Theorem Prover
-    log_event("PROOF", "Running Microsoft Z3 SMT Theorem Prover on candidate AST invariants...")
-    z3_res = Z3TheoremProver.verify_patched_discount_logic()
+    # Step 4: Microsoft Z3 SMT Formal Invariant Verification
+    emit_diagnostic_event("PROOF", "Running Microsoft Z3 SMT Theorem Prover on candidate AST invariants...")
+    formal_z3_verification = Z3TheoremProver.verify_patched_discount_logic()
 
-    if z3_res.is_verified:
-        cert = z3_res.certificate
-        log_event("PROOF", f"Theorem Verdict: [bold green]{cert.verdict}[/bold green]")
-        log_event("PROOF", f"Certificate ID:  [cyan]{cert.certificate_id}[/cyan]")
-        log_event("PROOF", f"SHA-256 Digest:  [dim]{cert.sha256_digest}[/dim]")
-        log_event("PROOF", "Invariants: [dim]denominator >= 1 & discount >= 0.0 & cap <= 0.50[/dim]")
+    if formal_z3_verification.is_verified:
+        formal_z3_certificate = formal_z3_verification.certificate
+        emit_diagnostic_event(
+            "PROOF", f"Theorem Verdict: [bold green]{formal_z3_certificate.verdict}[/bold green]"
+        )
+        emit_diagnostic_event(
+            "PROOF", f"Certificate ID:  [cyan]{formal_z3_certificate.certificate_id}[/cyan]"
+        )
+        emit_diagnostic_event(
+            "PROOF", f"SHA-256 Digest:  [dim]{formal_z3_certificate.sha256_digest}[/dim]"
+        )
+        emit_diagnostic_event(
+            "PROOF", "Invariants: [dim]denominator >= 1 & discount >= 0.0 & cap <= 0.50[/dim]"
+        )
     else:
-        log_event("WARN", "Formal verification failed to prove invariants.")
+        emit_diagnostic_event("WARN", "Formal verification failed to prove invariants.")
 
-    console.print()
+    terminal_console.print()
 
-    # Step 5: Patch Tournament Scoring Matrix
-    tournament_res = PatchTournamentKernel.evaluate_tournament(race_res, z3_res)
-    winner = tournament_res.winner
+    # Step 5: Multi-Objective Tournament Scoring Matrix
+    adjudicated_tournament_result = PatchTournamentKernel.evaluate_tournament(
+        tournament_race_outcomes, formal_z3_verification
+    )
 
-    table = Table(box=None, padding=(0, 2), show_edge=False, pad_edge=False)
-    table.add_column("RANK", style="bold", justify="right")
-    table.add_column("WORKTREE", style="bold cyan")
-    table.add_column("MODEL", style="dim")
-    table.add_column("STATUS")
-    table.add_column("SCORE", justify="right")
+    scorecard_summary_table = Table(box=None, padding=(0, 2), show_edge=False, pad_edge=False)
+    scorecard_summary_table.add_column("RANK", style="bold", justify="right")
+    scorecard_summary_table.add_column("WORKTREE", style="bold cyan")
+    scorecard_summary_table.add_column("MODEL", style="dim")
+    scorecard_summary_table.add_column("STATUS")
+    scorecard_summary_table.add_column("SCORE", justify="right")
 
-    for card in tournament_res.scorecards:
-        b = card.breakdown
-        if card.is_winner:
-            st = "[bold green]CROWNED WINNER[/bold green]"
-            sc = f"[bold green]{b.total_score}/100[/bold green]"
-        elif b.disqualified:
-            st = "[bold red]DISQUALIFIED[/bold red]"
-            sc = "[red]0.0/100[/red]"
+    for candidate_card in adjudicated_tournament_result.scorecards:
+        score_breakdown = candidate_card.breakdown
+        if candidate_card.is_winner:
+            status_badge_markup = "[bold green]CROWNED WINNER[/bold green]"
+            score_text_markup = f"[bold green]{score_breakdown.total_score}/100[/bold green]"
+        elif score_breakdown.disqualified:
+            status_badge_markup = "[bold red]DISQUALIFIED[/bold red]"
+            score_text_markup = "[red]0.0/100[/red]"
         else:
-            st = "[bold yellow]PENALIZED[/bold yellow]"
-            sc = f"[yellow]{b.total_score}/100[/yellow]"
+            status_badge_markup = "[bold yellow]PENALIZED[/bold yellow]"
+            score_text_markup = f"[yellow]{score_breakdown.total_score}/100[/yellow]"
 
-        table.add_row(f"#{card.rank}", card.worktree_name, card.model_used, st, sc)
+        scorecard_summary_table.add_row(
+            f"#{candidate_card.rank}",
+            candidate_card.worktree_name,
+            candidate_card.model_used,
+            status_badge_markup,
+            score_text_markup,
+        )
 
-    console.print(table)
-    console.print()
+    terminal_console.print(scorecard_summary_table)
+    terminal_console.print()
 
-    # Step 6: PR Generation & Verification
-    pr_gen = PRGenerator(str(WORKSPACE_ROOT))
-    flight_pr = pr_gen.write_pr_artifact(tournament_res)
-    rel_pr_path = os.path.relpath(flight_pr.artifact_path, str(WORKSPACE_ROOT))
+    # Step 6: Flight Recorder PR Generation & Artifact Writing
+    pr_generator_engine = PRGenerator(str(PROJECT_WORKSPACE_ROOT))
+    flight_recorder_pr_artifact = pr_generator_engine.write_pr_artifact(adjudicated_tournament_result)
+    relative_pr_artifact_path = os.path.relpath(
+        flight_recorder_pr_artifact.artifact_path, str(PROJECT_WORKSPACE_ROOT)
+    )
 
-    total_time = round(time.perf_counter() - start_time, 2)
-    log_event("DONE", f"Proof-carrying PR written: [bold cyan]{rel_pr_path}[/bold cyan]")
-    log_event("DONE", f"Autonomous repair completed in [bold green]{total_time}s[/bold green]")
-    console.print()
+    total_pipeline_duration_seconds = round(time.perf_counter() - workflow_execution_clock_start, 2)
+    emit_diagnostic_event(
+        "DONE", f"Proof-carrying PR written: [bold cyan]{relative_pr_artifact_path}[/bold cyan]"
+    )
+    emit_diagnostic_event(
+        "DONE",
+        f"Autonomous repair completed in [bold green]{total_pipeline_duration_seconds}s[/bold green]",
+    )
+    terminal_console.print()
 
 
 def main():
-    parser = argparse.ArgumentParser(
+    cli_argument_parser = argparse.ArgumentParser(
         description="AutoPatch-Kernel: Hardcore Minimalist Terminal UI",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument(
+    cli_argument_parser.add_argument(
         "--auto",
         action="store_true",
         help="Run without interactive prompt (auto-pilot mode)",
     )
-    parser.add_argument(
+    cli_argument_parser.add_argument(
         "--prompt",
         type=str,
         default=None,
         help="Custom bug prompt to execute",
     )
-    args = parser.parse_args()
+    parsed_cli_options = cli_argument_parser.parse_args()
 
-    run_interactive_cli(auto_pilot=args.auto, prompt_override=args.prompt)
+    run_interactive_cli(
+        auto_pilot=parsed_cli_options.auto, prompt_override=parsed_cli_options.prompt
+    )
 
 
 if __name__ == "__main__":

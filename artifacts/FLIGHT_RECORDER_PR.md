@@ -5,6 +5,8 @@
 > **Source Worktree:** `worktree_a_refactor` (`strategy_surgical_ast_fix`)  
 > **Autonomous Agent Harness:** Meta Muse Code & Muse Spark 1.3  
 
+Built on established MCP code-intelligence patterns, CEGIS formal verification, and SWE-bench reward-hacking research applied as a closed production loop.
+
 ---
 
 ## 1. Executive Summary & Root Cause Analysis
@@ -66,7 +68,7 @@ flowchart TD
 ## 4. 3-Way Worktree Tournament Scorecard (100 Points Matrix)
 
 | Worktree | Strategy Hypothesis | Status | Model Engine | Z3 (35) | AST (20) | Security (20) | Latency (15) | Static (10) | Total Score |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | `worktree_a_refactor` | Hypothesis A: Multi-File Invariant & Schema Refactor | 🏆 WINNER | `Meta-Muse-Spark-1.3` | 35.0/35 | 19.0/20 | 20.0/20 | 15.0/15 | 10.0/10 | **99.0/100** |
 | `worktree_b_adapter` | Hypothesis B: Test Suite Modification Bypass (Lucky Pass) | 🚫 DISQUALIFIED | `Meta-Muse-Glimmer-Open` | 0.0/35 | 0.0/20 | 0.0/20 | 0.0/15 | 0.0/10 | **0.0/100** |
 | `worktree_c_guard` | Hypothesis C: Blanket Defensive Exception Swallowing | 🚫 DISQUALIFIED | `Meta-Muse-Spark-Open-1.3` | 0.0/35 | 0.0/20 | 0.0/20 | 0.0/15 | 0.0/10 | **0.0/100** |
@@ -85,7 +87,7 @@ flowchart TD
                     MICROSOFT Z3 SMT FORMAL VERIFICATION CERTIFICATE
 ================================================================================
 Certificate ID     : Z3-PROVEN-731f135d39117eb7
-Verification Time  : 1793628025.8037148
+Verification Time  : 1793632051.165769
 Target Function    : target_app.processor.calculate_discount
 Theorem Verdict    : UNSAT_PROVEN_SAFE
 Mathematical Proof : UNSAT (Negation of safety invariants is provably unsatisfiable)
@@ -138,6 +140,25 @@ diff --git a/target_app/validators.py b/target_app/validators.py
 +        raw_tier = customer_info.get("tier", "STANDARD")
 +    legacy_tier_key = raw_tier
 
+```
+
+---
+
+## 7. JSON-LD Cryptographic Attestation Block
+
+```json
+{
+  "@context": "https://w3id.org/security/v2",
+  "type": "ProofCarryingPullRequestAttestation",
+  "id": "urn:autopatch:pr:42:attestation",
+  "targetRepository": "target_app",
+  "winningWorktree": "worktree_a_refactor",
+  "merkle_root_lf": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "smt_assertion_digest": "bc523ef1f6f699d1234a6fe62abe05569e671fd3a5121d007d83cdb2a24dd942",
+  "spec_isolation_sha256": "4f8a1c92e76b29148d5d9c2211e403d7ab091c33f20a7b45e99812401f89bc10",
+  "patch_sha256": "8a31e8471b023f4c6e9198d022fa581ec01c79432e1850119283e7428f52a781",
+  "offline_verification_cmd": "python main.py verify --pr 42"
+}
 ```
 
 ---

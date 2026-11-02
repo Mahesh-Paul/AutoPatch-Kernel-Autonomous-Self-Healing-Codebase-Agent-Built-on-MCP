@@ -1,8 +1,8 @@
 """Dynamic Codebase Healing Orchestrator for Live Hackathon Demonstrations.
 
 Clones arbitrary GitHub repositories dynamically into `.autopatch/live_target/`,
-runs pytest inside the cloned environment to capture the real stacktrace and syscalls,
-slices the exact AST 2-hop neighborhood centered on the crash line, executes the 3 Git
+runs test suites inside the cloned environment to capture the real stacktrace and syscalls,
+slices the exact AST 2-hop neighborhood centered on the crash line, executes parallel Git
 worktrees directly in the cloned codebase, proves safety via Z3 SMT, and generates the PR.
 """
 from __future__ import annotations
@@ -27,24 +27,27 @@ from mcp_server.ast_graph_mcp import ASTCallGraphEngine, ASTSubGraphResponse, Sy
 from verification.z3_verifier import Z3TheoremProver, Z3VerificationResult
 
 
-def _remove_readonly(func, path, excinfo):
+def _remove_readonly(func, target_path, excinfo):
+    """Error handler callback for shutil.rmtree to override Windows read-only file attributes."""
     try:
-        os.chmod(path, stat.S_IWRITE)
-        func(path)
-    except Exception:
+        os.chmod(target_path, stat.S_IWRITE)
+        func(target_path)
+    except OSError:
         pass
 
 
-def _safe_rmtree(target: Path):
-    if not target.exists():
+def _safe_rmtree(target_directory: Path) -> None:
+    """Recursively removes a filesystem directory tree with Windows readonly attribute overrides."""
+    if not target_directory.exists():
         return
     try:
-        shutil.rmtree(target, onerror=_remove_readonly)
-    except Exception:
+        shutil.rmtree(target_directory, onerror=_remove_readonly)
+    except OSError:
         pass
 
 
 class PipelineEvent(BaseModel):
+    """Envelope for real-time Server-Sent Events (SSE) telemetry frames."""
     step: str
     stage: str
     message: str
@@ -66,66 +69,76 @@ class DynamicPipelineOrchestrator:
         self.pr_generator = PRGenerator(str(self.workspace_root))
 
     @staticmethod
-    def extract_repo_name(repo_url: str) -> str:
-        """Parses the canonical repo name from a Git URL or path."""
-        cleaned = repo_url.strip().rstrip("/")
-        if not cleaned:
+    def extract_repo_name(raw_repository_url: str) -> str:
+        """Parses the canonical repository identifier from a Git URL, SSH path, or string identifier."""
+        sanitized_url_token = raw_repository_url.strip().rstrip("/")
+        if not sanitized_url_token:
             return "broken-payment-engine"
-        name = Path(cleaned).stem
-        if name.endswith(".git"):
-            name = name[:-4]
-        return name or "broken-payment-engine"
+        parsed_stem = Path(sanitized_url_token).stem
+        if parsed_stem.endswith(".git"):
+            parsed_stem = parsed_stem[:-4]
+        return parsed_stem or "broken-payment-engine"
 
-    def clone_or_prepare_target(self, repo_url: str) -> Tuple[Path, str, bool]:
-        """Clones a remote repository into .autopatch/live_target/ with graceful offline fallback."""
-        repo_name = self.extract_repo_name(repo_url)
+    def clone_or_prepare_target(self, target_repository_url: str) -> Tuple[Path, str, bool]:
+        """Provisions an isolated Git working tree in .autopatch/live_target/ with graceful offline fallback."""
+        canonical_repo_slug = self.extract_repo_name(target_repository_url)
         _safe_rmtree(self.live_target_dir)
         self.live_target_dir.parent.mkdir(parents=True, exist_ok=True)
 
         is_remote_cloned = False
-        is_git_url = any(repo_url.strip().startswith(prefix) for prefix in ("http://", "https://", "git@", "ssh://"))
+        is_git_protocol = any(
+            target_repository_url.strip().startswith(prefix)
+            for prefix in ("http://", "https://", "git@", "ssh://")
+        )
 
-        if is_git_url:
+        if is_git_protocol:
             try:
-                # Attempt shallow git clone with short timeout so it never hangs in sandbox or offline
-                clone_cmd = ["git", "clone", "--depth", "1", repo_url.strip(), str(self.live_target_dir)]
-                proc = subprocess.run(clone_cmd, capture_output=True, text=True, timeout=5)
-                if proc.returncode == 0 and self.live_target_dir.exists():
+                # Shallow clone with bounded timeout to prevent blocking on network airgaps
+                git_clone_cmd = [
+                    "git", "clone", "--depth", "1",
+                    target_repository_url.strip(),
+                    str(self.live_target_dir),
+                ]
+                git_proc = subprocess.run(git_clone_cmd, capture_output=True, text=True, timeout=5)
+                if git_proc.returncode == 0 and self.live_target_dir.exists():
                     is_remote_cloned = True
-            except Exception:
+            except (subprocess.TimeoutExpired, OSError):
                 is_remote_cloned = False
 
-        # Fallback if offline or local target demonstration
+        # Fallback to local reference target app when offline or demonstrating in airgapped environments
         if not is_remote_cloned or not self.live_target_dir.exists():
             _safe_rmtree(self.live_target_dir)
             self.live_target_dir.mkdir(parents=True, exist_ok=True)
 
-            source_app_dir = self.workspace_root / "target_app"
+            source_reference_dir = self.workspace_root / "target_app"
             target_sub_dir = self.live_target_dir / "target_app"
 
-            if source_app_dir.exists():
-                shutil.copytree(source_app_dir, target_sub_dir, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+            if source_reference_dir.exists():
+                shutil.copytree(
+                    source_reference_dir,
+                    target_sub_dir,
+                    ignore=shutil.ignore_patterns(".git", "__pycache__"),
+                )
             else:
-                # Copy current root files if standalone
-                for item in self.workspace_root.glob("*.py"):
-                    shutil.copy(item, self.live_target_dir / item.name)
+                for python_source in self.workspace_root.glob("*.py"):
+                    shutil.copy(python_source, self.live_target_dir / python_source.name)
 
-            # Initialize as a valid local Git repo so git worktrees can be created directly
+            # Initialize ephemeral Git repository to support native Git worktrees
             subprocess.run(["git", "init"], cwd=str(self.live_target_dir), capture_output=True)
             subprocess.run(["git", "config", "user.name", "AutoPatch Bot"], cwd=str(self.live_target_dir), capture_output=True)
             subprocess.run(["git", "config", "user.email", "bot@autopatch.io"], cwd=str(self.live_target_dir), capture_output=True)
             subprocess.run(["git", "add", "."], cwd=str(self.live_target_dir), capture_output=True)
-            subprocess.run(["git", "commit", "-m", f"Initial state for {repo_name}"], cwd=str(self.live_target_dir), capture_output=True)
+            subprocess.run(["git", "commit", "-m", f"Initial state for {canonical_repo_slug}"], cwd=str(self.live_target_dir), capture_output=True)
 
-        return self.live_target_dir, repo_name, is_remote_cloned
+        return self.live_target_dir, canonical_repo_slug, is_remote_cloned
 
     def run_pipeline_stream(
         self,
         repo_url: str = "https://github.com/user/broken-payment-engine",
     ) -> Generator[Dict[str, Any], None, Dict[str, Any]]:
         """Executes the dynamic pipeline yielding real-time SSE event dictionaries."""
-        start_time = time.perf_counter()
-        repo_name = self.extract_repo_name(repo_url)
+        clock_start_ns = time.perf_counter()
+        canonical_repo_slug = self.extract_repo_name(repo_url)
 
         # ----------------------------------------------------------------------
         # STAGE 1: DYNAMIC CLONING
@@ -133,25 +146,29 @@ class DynamicPipelineOrchestrator:
         yield {
             "step": "CLONE_START",
             "stage": "01_CLONING",
-            "repo_name": repo_name,
+            "repo_name": canonical_repo_slug,
             "repo_url": repo_url,
-            "message": f"Cloning target repository '{repo_name}' into .autopatch/live_target/...",
+            "message": f"Cloning target repository '{canonical_repo_slug}' into .autopatch/live_target/...",
             "details": {"destination": str(self.live_target_dir)},
         }
 
-        live_dir, repo_name, is_remote = self.clone_or_prepare_target(repo_url)
-        all_py_files = [str(p.relative_to(live_dir)) for p in live_dir.rglob("*.py") if ".autopatch" not in p.parts and ".git" not in p.parts]
+        live_directory_path, canonical_repo_slug, is_remote = self.clone_or_prepare_target(repo_url)
+        discovered_python_sources = [
+            str(p.relative_to(live_directory_path))
+            for p in live_directory_path.rglob("*.py")
+            if ".autopatch" not in p.parts and ".git" not in p.parts
+        ]
 
         yield {
             "step": "CLONE_SUCCESS",
             "stage": "01_CLONING",
-            "repo_name": repo_name,
+            "repo_name": canonical_repo_slug,
             "repo_url": repo_url,
-            "message": f"Repository '{repo_name}' cloned and initialized ({len(all_py_files)} Python files detected).",
+            "message": f"Repository '{canonical_repo_slug}' cloned and initialized ({len(discovered_python_sources)} Python files detected).",
             "details": {
                 "is_remote_clone": is_remote,
-                "local_path": str(live_dir),
-                "py_files": all_py_files[:10],
+                "local_path": str(live_directory_path),
+                "py_files": discovered_python_sources[:10],
             },
         }
 
@@ -161,53 +178,63 @@ class DynamicPipelineOrchestrator:
         yield {
             "step": "TEST_EXEC_START",
             "stage": "02_TEST_CAPTURE",
-            "repo_name": repo_name,
+            "repo_name": canonical_repo_slug,
             "repo_url": repo_url,
-            "message": f"Running dynamic test suite inside '{repo_name}' to trigger and capture the runtime failure...",
-            "details": {"cwd": str(live_dir)},
+            "message": f"Running dynamic test suite inside '{canonical_repo_slug}' to trigger and capture the runtime failure...",
+            "details": {"cwd": str(live_directory_path)},
         }
 
-        # Determine test command
-        if (live_dir / "target_app" / "tests").exists():
-            test_cmd = f'"{sys.executable}" -m unittest discover -s target_app/tests'
-        elif (live_dir / "tests").exists():
-            test_cmd = f'"{sys.executable}" -m pytest tests'
+        if (live_directory_path / "target_app" / "tests").exists():
+            test_subcommand = f'"{sys.executable}" -m unittest discover -s target_app/tests'
+        elif (live_directory_path / "tests").exists():
+            test_subcommand = f'"{sys.executable}" -m pytest tests'
         else:
-            test_cmd = f'"{sys.executable}" -m unittest discover'
+            test_subcommand = f'"{sys.executable}" -m unittest discover'
 
-        telemetry = SyscallTelemetryEngine.capture(command=test_cmd, cwd=str(live_dir))
+        captured_telemetry = SyscallTelemetryEngine.capture(command=test_subcommand, cwd=str(live_directory_path))
 
-        # Identify primary crash coordinate
-        crash_file = ""
-        crash_line = 26
-        focal_func = "calculate_discount"
+        # Isolate focal crash coordinate
+        focal_crash_file_str = ""
+        focal_crash_line = 26
+        focal_function_identifier = "calculate_discount"
 
-        if telemetry.primary_failure_frame:
-            crash_file = telemetry.primary_failure_frame.file_path
-            crash_line = telemetry.primary_failure_frame.line_number
-            focal_func = telemetry.primary_failure_frame.function_name
+        if captured_telemetry.primary_failure_frame:
+            focal_crash_file_str = captured_telemetry.primary_failure_frame.file_path
+            focal_crash_line = captured_telemetry.primary_failure_frame.line_number
+            focal_function_identifier = captured_telemetry.primary_failure_frame.function_name
         else:
-            # Fallback to processor.py in live_dir
-            proc_file = list(live_dir.rglob("processor.py"))
-            if proc_file:
-                crash_file = str(proc_file[0])
+            located_processor_files = list(live_directory_path.rglob("processor.py"))
+            if located_processor_files:
+                focal_crash_file_str = str(located_processor_files[0])
 
-        rel_crash_file = str(Path(crash_file).relative_to(live_dir)) if crash_file and live_dir in Path(crash_file).parents else str(Path(crash_file).name or "processor.py")
-        error_name = telemetry.detected_exceptions[0] if telemetry.detected_exceptions else "ZeroDivisionError: division by zero"
+        relative_crash_path = (
+            str(Path(focal_crash_file_str).relative_to(live_directory_path))
+            if focal_crash_file_str and live_directory_path in Path(focal_crash_file_str).parents
+            else str(Path(focal_crash_file_str).name or "processor.py")
+        )
+        exception_signature = (
+            captured_telemetry.detected_exceptions[0]
+            if captured_telemetry.detected_exceptions
+            else "ZeroDivisionError: division by zero"
+        )
 
         yield {
             "step": "CRASH_IDENTIFIED",
             "stage": "02_TEST_CAPTURE",
-            "repo_name": repo_name,
+            "repo_name": canonical_repo_slug,
             "repo_url": repo_url,
-            "file_path": rel_crash_file,
-            "line_number": crash_line,
-            "focal_function": focal_func,
-            "message": f"Captured live crash: {error_name} at {rel_crash_file}:{crash_line}",
+            "file_path": relative_crash_path,
+            "line_number": focal_crash_line,
+            "focal_function": focal_function_identifier,
+            "message": f"Captured live crash: {exception_signature} at {relative_crash_path}:{focal_crash_line}",
             "details": {
-                "exit_code": telemetry.exit_code,
-                "detected_exceptions": telemetry.detected_exceptions,
-                "failing_statement": telemetry.primary_failure_frame.code_statement if telemetry.primary_failure_frame else "discount_ratio = (tier_multiplier * 0.05) / promo_denominator",
+                "exit_code": captured_telemetry.exit_code,
+                "detected_exceptions": captured_telemetry.detected_exceptions,
+                "failing_statement": (
+                    captured_telemetry.primary_failure_frame.code_statement
+                    if captured_telemetry.primary_failure_frame
+                    else "discount_ratio = (tier_multiplier * 0.05) / promo_denominator"
+                ),
             },
         }
 
@@ -217,36 +244,36 @@ class DynamicPipelineOrchestrator:
         yield {
             "step": "AST_SLICE_START",
             "stage": "03_AST_MCP",
-            "repo_name": repo_name,
+            "repo_name": canonical_repo_slug,
             "repo_url": repo_url,
-            "file_path": rel_crash_file,
-            "line_number": crash_line,
-            "focal_function": focal_func,
-            "message": f"Querying AST 2-Hop MCP Server for {rel_crash_file}:{crash_line}...",
+            "file_path": relative_crash_path,
+            "line_number": focal_crash_line,
+            "focal_function": focal_function_identifier,
+            "message": f"Querying AST 2-Hop MCP Server for {relative_crash_path}:{focal_crash_line}...",
             "details": {},
         }
 
-        ast_engine = ASTCallGraphEngine(str(live_dir))
-        subgraph = ast_engine.extract_subgraph(crash_file, line_number=crash_line)
+        ast_call_engine = ASTCallGraphEngine(str(live_directory_path))
+        causal_subgraph = ast_call_engine.extract_subgraph(focal_crash_file_str, line_number=focal_crash_line)
 
-        upstream_names = [c.name for c in subgraph.upstream_callers]
-        downstream_names = [c.name for c in subgraph.downstream_callees]
+        upstream_caller_names = [caller_node.name for caller_node in causal_subgraph.upstream_callers]
+        downstream_callee_names = [callee_node.name for callee_node in causal_subgraph.downstream_callees]
 
         yield {
             "step": "AST_SLICE_COMPLETE",
             "stage": "03_AST_MCP",
-            "repo_name": repo_name,
+            "repo_name": canonical_repo_slug,
             "repo_url": repo_url,
-            "file_path": rel_crash_file,
-            "line_number": crash_line,
-            "focal_function": subgraph.focal_node.name,
-            "message": f"Extracted 2-hop neighborhood: focal '{subgraph.focal_node.name}', {len(upstream_names)} callers, {len(downstream_names)} callees.",
+            "file_path": relative_crash_path,
+            "line_number": focal_crash_line,
+            "focal_function": causal_subgraph.focal_node.name,
+            "message": f"Extracted 2-hop neighborhood: focal '{causal_subgraph.focal_node.name}', {len(upstream_caller_names)} callers, {len(downstream_callee_names)} callees.",
             "details": {
-                "focal_node": subgraph.focal_node.model_dump(),
-                "upstream_callers": upstream_names,
-                "downstream_callees": downstream_names,
-                "source_slice": subgraph.focal_node.source_slice,
-                "total_nodes": subgraph.total_nodes_in_neighborhood,
+                "focal_node": causal_subgraph.focal_node.model_dump(),
+                "upstream_callers": upstream_caller_names,
+                "downstream_callees": downstream_callee_names,
+                "source_slice": causal_subgraph.focal_node.source_slice,
+                "total_nodes": causal_subgraph.total_nodes_in_neighborhood,
             },
         }
 
@@ -256,33 +283,33 @@ class DynamicPipelineOrchestrator:
         yield {
             "step": "WORKTREE_RACE_START",
             "stage": "04_WORKTREE_RACE",
-            "repo_name": repo_name,
+            "repo_name": canonical_repo_slug,
             "repo_url": repo_url,
-            "message": f"Spawning 3 isolated parallel Git worktrees in {repo_name}/.autopatch/worktrees/...",
+            "message": f"Spawning 3 isolated parallel Git worktrees in {canonical_repo_slug}/.autopatch/worktrees/...",
             "details": {
-                "worktree_a": "worktree_a_refactor (Meta Muse Spark 1.3)",
-                "worktree_b": "worktree_b_adapter (Meta Muse Glimmer Open)",
-                "worktree_c": "worktree_c_guard (Meta Muse Spark Open)",
+                "worktree_a": "worktree_a_refactor (Llama 3.3 70B Instruct)",
+                "worktree_b": "worktree_b_lockfree (Code Llama 34B)",
+                "worktree_c": "worktree_c_circuitbreaker (Code Llama 34B)",
             },
         }
 
-        live_worktree_manager = WorktreeManager(str(live_dir))
-        race_res = live_worktree_manager.race_competing_hypotheses(subgraph, telemetry)
+        live_worktree_supervisor = WorktreeManager(str(live_directory_path))
+        tournament_race_telemetry = live_worktree_supervisor.race_competing_hypotheses(causal_subgraph, captured_telemetry)
 
-        for outcome in race_res.outcomes:
-            badge = "PASSED" if not outcome.is_disqualified else "DISQUALIFIED"
+        for candidate_outcome in tournament_race_telemetry.outcomes:
+            evaluation_status_badge = "PASSED" if not candidate_outcome.is_disqualified else "DISQUALIFIED"
             yield {
                 "step": "WORKTREE_RESULT",
                 "stage": "04_WORKTREE_RACE",
-                "repo_name": repo_name,
+                "repo_name": canonical_repo_slug,
                 "repo_url": repo_url,
-                "message": f"Worktree '{outcome.worktree_name}': {badge} ({outcome.disqualification_reason or 'Tests Passed Under Guardrail'})",
+                "message": f"Worktree '{candidate_outcome.worktree_name}': {evaluation_status_badge} ({candidate_outcome.disqualification_reason or 'Tests Passed Under Guardrail'})",
                 "details": {
-                    "worktree_name": outcome.worktree_name,
-                    "hypothesis": outcome.hypothesis_name,
-                    "is_disqualified": outcome.is_disqualified,
-                    "reason": outcome.disqualification_reason,
-                    "duration_ms": outcome.execution_duration_ms,
+                    "worktree_name": candidate_outcome.worktree_name,
+                    "hypothesis": candidate_outcome.hypothesis_name,
+                    "is_disqualified": candidate_outcome.is_disqualified,
+                    "reason": candidate_outcome.disqualification_reason,
+                    "duration_ms": candidate_outcome.execution_duration_ms,
                 },
             }
 
@@ -292,61 +319,63 @@ class DynamicPipelineOrchestrator:
         yield {
             "step": "Z3_PROOF_START",
             "stage": "05_FORMAL_VERIFICATION",
-            "repo_name": repo_name,
+            "repo_name": canonical_repo_slug,
             "repo_url": repo_url,
             "message": "Invoking Microsoft Z3 SMT solver on dynamically patched business logic...",
             "details": {},
         }
 
-        z3_res = Z3TheoremProver.verify_patched_discount_logic()
+        formal_invariance_proof = Z3TheoremProver.verify_patched_discount_logic()
 
         yield {
             "step": "Z3_PROOF_COMPLETE",
             "stage": "05_FORMAL_VERIFICATION",
-            "repo_name": repo_name,
+            "repo_name": canonical_repo_slug,
             "repo_url": repo_url,
-            "message": f"Z3 SMT Verification: {z3_res.verdict} (Cryptographic SHA-256 Certified)",
+            "message": f"Z3 SMT Verification: {formal_invariance_proof.verdict} (Cryptographic SHA-256 Certified)",
             "details": {
-                "verdict": z3_res.verdict,
-                "is_verified": z3_res.is_verified,
-                "certificate_id": z3_res.certificate.certificate_id,
-                "sha256": z3_res.certificate.sha256_digest,
-                "invariants": z3_res.certificate.post_conditions,
-                "solver_duration_ms": z3_res.duration_ms,
+                "verdict": formal_invariance_proof.verdict,
+                "is_verified": formal_invariance_proof.is_verified,
+                "certificate_id": formal_invariance_proof.certificate.certificate_id,
+                "sha256": formal_invariance_proof.certificate.sha256_digest,
+                "invariants": formal_invariance_proof.certificate.post_conditions,
+                "solver_duration_ms": formal_invariance_proof.duration_ms,
             },
         }
 
         # ----------------------------------------------------------------------
         # STAGE 6: TOURNAMENT SCORING & FLIGHT RECORDER PR ARTIFACT
         # ----------------------------------------------------------------------
-        tournament_res = PatchTournamentKernel.evaluate_tournament(race_res, z3_res)
-        flight_pr = self.pr_generator.write_pr_artifact(tournament_res)
+        tournament_evaluation_manifest = PatchTournamentKernel.evaluate_tournament(
+            tournament_race_telemetry, formal_invariance_proof
+        )
+        flight_recorder_attestation_pr = self.pr_generator.write_pr_artifact(tournament_evaluation_manifest)
 
-        total_duration = round((time.perf_counter() - start_time) * 1000.0, 2)
+        cumulative_pipeline_latency_ms = round((time.perf_counter() - clock_start_ns) * 1000.0, 2)
 
-        final_summary = {
+        final_summary_envelope = {
             "step": "PIPELINE_COMPLETE",
             "stage": "06_FLIGHT_PR",
-            "repo_name": repo_name,
+            "repo_name": canonical_repo_slug,
             "repo_url": repo_url,
-            "file_path": rel_crash_file,
-            "line_number": crash_line,
-            "tournament_winner": tournament_res.winner.model_dump(),
-            "scorecards": [s.model_dump() for s in tournament_res.scorecards],
-            "z3_certificate": z3_res.certificate.model_dump(),
-            "pr_title": flight_pr.title,
-            "pr_artifact_path": flight_pr.artifact_path,
-            "total_pipeline_duration_ms": total_duration,
-            "message": f"Autonomous healing completed for '{repo_name}' in {total_duration}ms. Crowned Winner: {tournament_res.winner.worktree_name} ({tournament_res.winner.breakdown.total_score}/100)!",
+            "file_path": relative_crash_path,
+            "line_number": focal_crash_line,
+            "tournament_winner": tournament_evaluation_manifest.winner.model_dump(),
+            "scorecards": [s.model_dump() for s in tournament_evaluation_manifest.scorecards],
+            "z3_certificate": formal_invariance_proof.certificate.model_dump(),
+            "pr_title": flight_recorder_attestation_pr.title,
+            "pr_artifact_path": flight_recorder_attestation_pr.artifact_path,
+            "total_pipeline_duration_ms": cumulative_pipeline_latency_ms,
+            "message": f"Autonomous healing completed for '{canonical_repo_slug}' in {cumulative_pipeline_latency_ms}ms. Crowned Winner: {tournament_evaluation_manifest.winner.worktree_name} ({tournament_evaluation_manifest.winner.breakdown.total_score}/100)!",
         }
 
-        yield final_summary
-        return final_summary
+        yield final_summary_envelope
+        return final_summary_envelope
 
     def run_pipeline(self, repo_url: str) -> Dict[str, Any]:
         """Runs the pipeline synchronously and returns the final comprehensive result."""
-        final_result = {}
-        for event in self.run_pipeline_stream(repo_url):
-            if event.get("step") == "PIPELINE_COMPLETE":
-                final_result = event
-        return final_result
+        synchronous_final_envelope = {}
+        for telemetry_event in self.run_pipeline_stream(repo_url):
+            if telemetry_event.get("step") == "PIPELINE_COMPLETE":
+                synchronous_final_envelope = telemetry_event
+        return synchronous_final_envelope

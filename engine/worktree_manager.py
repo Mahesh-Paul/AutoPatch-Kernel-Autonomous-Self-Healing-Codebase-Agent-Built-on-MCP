@@ -1,20 +1,22 @@
-"""Parallel Git Worktree Manager & Multi-Agent Race Orchestrator.
+"""Parallel Git Worktree Manager & Multi-Agent Hypothesis Race Orchestrator.
 
-Spawns and manages 3 concurrent isolated Git worktrees (.autopatch/worktrees/)
-using native `git worktree add` commands with thread-safe locking and executes
-competing repair hypotheses under the Read-Only Sandbox Guardrail.
+Spawns and orchestrates concurrent, completely isolated Git worktrees within
+`.autopatch/worktrees/` using native `git worktree add` commands under fine-grained
+thread locks. Executes speculative repair candidates against the Read-Only Sandbox
+Guardrail, recording structured trajectory records to the memory substrate.
 """
 from __future__ import annotations
 
 import concurrent.futures
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
@@ -22,28 +24,41 @@ from engine.critic_agent import CriticEvaluation, MuseWonderCritic
 from engine.memory_store import TrajectoryMemoryStore, TrajectoryRecord
 from engine.meta_model_router import MetaModelRouter, ModelPatchCandidate
 from mcp_server.ast_graph_mcp import ASTSubGraphResponse, SyscallTelemetry
-from sandbox.sandbox_runner import SandboxRunResult, SandboxRunner, ShadowTrafficMetrics, ShadowTrafficReplayEngine
+from sandbox.sandbox_runner import (
+    SandboxRunResult,
+    SandboxRunner,
+    ShadowTrafficMetrics,
+    ShadowTrafficReplayEngine,
+)
 
 
-def _remove_readonly(func, path, excinfo):
-    import stat
+class WorktreeLifecycleException(RuntimeError):
+    """Raised when git worktree instantiation, branch locking, or filesystem cleanup fails."""
+    pass
+
+
+def _force_unlock_and_unlink(operation_func: Callable[[str], Any], filesystem_path: str, exception_context: Any) -> None:
+    """Error handler for shutil.rmtree on Windows to strip FILE_ATTRIBUTE_READONLY bit and retry."""
     try:
-        os.chmod(path, stat.S_IWRITE)
-        func(path)
+        os.chmod(filesystem_path, stat.S_IWRITE | stat.S_IREAD)
+        operation_func(filesystem_path)
     except Exception:
+        # Suppress secondary cleanup exceptions to prevent unhandled aborts during worktree cycling
         pass
 
 
-def _safe_rmtree(target: Path):
-    if not target.exists():
+def _safely_purge_worktree_tree(target_worktree_directory: Path) -> None:
+    """Recursively removes a worktree directory hierarchy, clearing lock attributes safely."""
+    if not target_worktree_directory.exists():
         return
     try:
-        shutil.rmtree(target, onerror=_remove_readonly)
+        shutil.rmtree(target_worktree_directory, onerror=_force_unlock_and_unlink)
     except Exception:
         pass
 
 
 class WorktreeExecutionOutcome(BaseModel):
+    """Encapsulates the full execution lifecycle and verification outcomes of a single candidate worktree."""
     strategy_id: str
     hypothesis_name: str
     worktree_name: str
@@ -58,6 +73,7 @@ class WorktreeExecutionOutcome(BaseModel):
 
 
 class WorktreeTournamentRaceResult(BaseModel):
+    """Aggregate outcomes across all parallel worktree candidates executed during a tournament round."""
     total_candidates: int
     outcomes: List[WorktreeExecutionOutcome]
     winner_outcome: Optional[WorktreeExecutionOutcome] = None
@@ -65,173 +81,191 @@ class WorktreeTournamentRaceResult(BaseModel):
 
 
 class WorktreeManager:
-    """Thread-safe orchestrator for isolated parallel Git worktree execution."""
+    """Thread-safe orchestrator managing isolated parallel Git worktree branch lifecycles."""
 
     def __init__(self, workspace_root: Optional[str | Path] = None):
         self.workspace_root = Path(workspace_root or os.getcwd()).resolve()
         self.worktree_base_dir = self.workspace_root / ".autopatch" / "worktrees"
-        self.git_lock = threading.Lock()
+        self.git_index_mutex = threading.Lock()
         self.sandbox_runner = SandboxRunner(str(self.workspace_root))
         self.memory_store = TrajectoryMemoryStore()
         self.meta_router = MetaModelRouter()
 
-    def _run_git_command(self, args: List[str], cwd: Optional[Path] = None) -> Tuple[int, str, str]:
-        """Runs git command safely under git_lock to avoid index.lock contention."""
-        with self.git_lock:
-            cmd = ["git"] + args
-            res = subprocess.run(
-                cmd,
-                cwd=str(cwd or self.workspace_root),
+    def _execute_git_operation(
+        self,
+        command_arguments: List[str],
+        execution_cwd: Optional[Path] = None,
+    ) -> Tuple[int, str, str]:
+        """Runs a Git CLI command safely guarded by a mutex to eliminate git index.lock contention.
+        
+        Git cannot safely modify its index across multiple concurrent child processes in the same repo.
+        Serializing git worktree creations via `self.git_index_mutex` guarantees collision-free branching.
+        """
+        with self.git_index_mutex:
+            cli_invocation = ["git"] + command_arguments
+            git_process = subprocess.run(
+                cli_invocation,
+                cwd=str(execution_cwd or self.workspace_root),
                 capture_output=True,
                 text=True,
             )
-            return res.returncode, res.stdout, res.stderr
+            return git_process.returncode, git_process.stdout, git_process.stderr
 
-    def create_isolated_worktree(self, worktree_name: str) -> Path:
-        """Creates or reuses an isolated Git worktree under .autopatch/worktrees/<name>."""
-        wt_path = (self.worktree_base_dir / worktree_name).resolve()
-        branch_name = f"autopatch/{worktree_name}"
+    def create_isolated_worktree(self, target_worktree_slug: str) -> Path:
+        """Provisions an isolated Git worktree under `.autopatch/worktrees/<slug>` branched from HEAD."""
+        isolated_worktree_dir = (self.worktree_base_dir / target_worktree_slug).resolve()
+        speculative_branch_ref = f"autopatch/{target_worktree_slug}"
 
-        # Clean up existing worktree if present
-        if wt_path.exists():
-            self._run_git_command(["worktree", "remove", "--force", str(wt_path)])
-            if wt_path.exists():
-                _safe_rmtree(wt_path)
+        # Clean up stale worktree or filesystem residual from preceding runs
+        if isolated_worktree_dir.exists():
+            self._execute_git_operation(["worktree", "remove", "--force", str(isolated_worktree_dir)])
+            if isolated_worktree_dir.exists():
+                _safely_purge_worktree_tree(isolated_worktree_dir)
 
-        self._run_git_command(["branch", "-D", branch_name])
+        self._execute_git_operation(["branch", "-D", speculative_branch_ref])
         self.worktree_base_dir.mkdir(parents=True, exist_ok=True)
 
-        # Create new worktree branched from HEAD
-        code, out, err = self._run_git_command(
-            ["worktree", "add", "-B", branch_name, str(wt_path), "HEAD"]
+        # Checkout fresh speculative worktree at current HEAD commit
+        exit_code, stdout_msg, stderr_msg = self._execute_git_operation(
+            ["worktree", "add", "-B", speculative_branch_ref, str(isolated_worktree_dir), "HEAD"]
         )
 
-        if code != 0 or not wt_path.exists():
-            # Fallback to isolated directory copy if git worktree fails (e.g. sandbox permissions)
-            if not wt_path.exists():
+        if exit_code != 0 or not isolated_worktree_dir.exists():
+            # Fallback for environments where git worktree is restricted (e.g. restrictive container sandbox)
+            if not isolated_worktree_dir.exists():
                 shutil.copytree(
                     self.workspace_root,
-                    wt_path,
-                    ignore=shutil.ignore_patterns(".git", ".autopatch", "__pycache__"),
+                    isolated_worktree_dir,
+                    ignore=shutil.ignore_patterns(".git", ".autopatch", "__pycache__", ".pytest_cache"),
                 )
 
-        return wt_path
+        return isolated_worktree_dir
 
     @staticmethod
-    def _resolve_tests_dir(root: Path) -> Path:
-        """Dynamically locates the test directory within the target codebase."""
-        for candidate_rel in ["target_app/tests", "tests", "test"]:
-            p = root / candidate_rel
-            if p.exists() and p.is_dir():
-                return p
-        for p in root.rglob("test_*.py"):
-            if ".autopatch" not in p.parts:
-                return p.parent
-        return root / "target_app" / "tests"
+    def _resolve_tests_dir(repository_root: Path) -> Path:
+        """Locates the canonical test directory within the target codebase dynamically."""
+        for standard_test_path in ["target_app/tests", "tests", "test"]:
+            resolved_candidate = repository_root / standard_test_path
+            if resolved_candidate.exists() and resolved_candidate.is_dir():
+                return resolved_candidate
+        for python_test_file in repository_root.rglob("test_*.py"):
+            if ".autopatch" not in python_test_file.parts:
+                return python_test_file.parent
+        return repository_root / "target_app" / "tests"
 
-    def apply_patch_candidate(self, worktree_path: Path, candidate: ModelPatchCandidate):
-        """Applies candidate file patches to the target worktree."""
-        for patch in candidate.patches:
-            target_file = worktree_path / patch.relative_path
-            if not target_file.exists():
-                p_name = Path(patch.relative_path).name
-                matches = [p for p in worktree_path.rglob(p_name) if ".autopatch" not in p.parts]
-                if matches:
-                    target_file = matches[0]
+    def apply_patch_candidate(self, isolated_worktree_dir: Path, candidate_patch_spec: ModelPatchCandidate) -> None:
+        """Applies candidate source mutations into the isolated worktree filesystem."""
+        for file_patch in candidate_patch_spec.patches:
+            destination_target_file = isolated_worktree_dir / file_patch.relative_path
+            if not destination_target_file.exists():
+                file_basename = Path(file_patch.relative_path).name
+                discovered_matches = [
+                    matched_file
+                    for matched_file in isolated_worktree_dir.rglob(file_basename)
+                    if ".autopatch" not in matched_file.parts
+                ]
+                if discovered_matches:
+                    destination_target_file = discovered_matches[0]
 
-            target_file.parent.mkdir(parents=True, exist_ok=True)
+            destination_target_file.parent.mkdir(parents=True, exist_ok=True)
 
-            if target_file.exists():
-                content = target_file.read_text(encoding="utf-8")
-                if patch.original_snippet in content:
-                    new_content = content.replace(patch.original_snippet, patch.patched_snippet, 1)
-                    target_file.write_text(new_content, encoding="utf-8")
+            if destination_target_file.exists():
+                baseline_source_content = destination_target_file.read_text(encoding="utf-8")
+                if file_patch.original_snippet in baseline_source_content:
+                    mutated_source = baseline_source_content.replace(
+                        file_patch.original_snippet, file_patch.patched_snippet, 1
+                    )
+                    destination_target_file.write_text(mutated_source, encoding="utf-8")
                 else:
-                    # Append or write if exact snippet not found
-                    target_file.write_text(patch.patched_snippet, encoding="utf-8")
+                    # In extreme structural rewrites, replace file contents directly
+                    destination_target_file.write_text(file_patch.patched_snippet, encoding="utf-8")
             else:
-                target_file.write_text(patch.patched_snippet, encoding="utf-8")
+                destination_target_file.write_text(file_patch.patched_snippet, encoding="utf-8")
 
     def execute_single_candidate(
         self,
-        candidate: ModelPatchCandidate,
+        candidate_patch_spec: ModelPatchCandidate,
     ) -> WorktreeExecutionOutcome:
-        """Executes a single candidate hypothesis from setup through Critic, Sandbox, and Memory."""
-        start_time = time.perf_counter()
+        """Executes candidate verification from Muse Wonder Critic pre-check through Sandbox test evaluation."""
+        hypothesis_execution_timer_start = time.perf_counter()
 
-        # 1. Muse Wonder Critic Gate
-        critic_eval = MuseWonderCritic.evaluate_candidate(candidate, allow_adversarial_probes=True)
-        if not critic_eval.is_approved:
-            duration_ms = round((time.perf_counter() - start_time) * 1000.0, 2)
-            record = self.memory_store.record_trajectory(
-                strategy_id=candidate.strategy_id,
-                hypothesis_name=candidate.hypothesis_name,
-                worktree_name=candidate.target_worktree,
+        # 1. Muse Wonder Critic Pre-flight Filter
+        critic_evaluation = MuseWonderCritic.evaluate_candidate(
+            candidate_patch_spec, allow_adversarial_probes=True
+        )
+        if not critic_evaluation.is_approved:
+            elapsed_critic_ms = round((time.perf_counter() - hypothesis_execution_timer_start) * 1000.0, 2)
+            logged_trajectory = self.memory_store.record_trajectory(
+                strategy_id=candidate_patch_spec.strategy_id,
+                hypothesis_name=candidate_patch_spec.hypothesis_name,
+                worktree_name=candidate_patch_spec.target_worktree,
                 verdict="CRITIC_REJECTED",
-                files_modified=[p.relative_path for p in candidate.patches],
-                error_summary=critic_eval.critique_notes,
+                files_modified=[patch_entry.relative_path for patch_entry in candidate_patch_spec.patches],
+                error_summary=critic_evaluation.critique_notes,
             )
             return WorktreeExecutionOutcome(
-                strategy_id=candidate.strategy_id,
-                hypothesis_name=candidate.hypothesis_name,
-                worktree_name=candidate.target_worktree,
+                strategy_id=candidate_patch_spec.strategy_id,
+                hypothesis_name=candidate_patch_spec.hypothesis_name,
+                worktree_name=candidate_patch_spec.target_worktree,
                 worktree_path="",
-                critic_evaluation=critic_eval,
-                trajectory_record=record,
+                critic_evaluation=critic_evaluation,
+                trajectory_record=logged_trajectory,
                 is_disqualified=True,
-                disqualification_reason=f"CRITIC_REJECTED: {critic_eval.critique_notes}",
-                execution_duration_ms=duration_ms,
+                disqualification_reason=f"CRITIC_REJECTED: {critic_evaluation.critique_notes}",
+                execution_duration_ms=elapsed_critic_ms,
             )
 
-        # 2. Setup Isolated Worktree
-        wt_path = self.create_isolated_worktree(candidate.target_worktree)
+        # 2. Allocate Isolated Speculative Worktree
+        active_worktree_path = self.create_isolated_worktree(candidate_patch_spec.target_worktree)
 
-        # 3. Apply Patches
-        self.apply_patch_candidate(wt_path, candidate)
+        # 3. Inject Candidate Patch Mutations
+        self.apply_patch_candidate(active_worktree_path, candidate_patch_spec)
 
-        # 4. Execute under Read-Only Sandbox Guardrail
-        tests_dir = self._resolve_tests_dir(self.workspace_root)
-        sandbox_res = self.sandbox_runner.execute_with_guardrail(
-            worktree_path=wt_path,
-            branch_name=candidate.target_worktree,
-            reference_tests_dir=tests_dir,
+        # 4. Execute Test Suite under Cryptographic Read-Only Sandbox Guardrail
+        canonical_test_directory = self._resolve_tests_dir(self.workspace_root)
+        sandbox_execution_verdict = self.sandbox_runner.execute_with_guardrail(
+            worktree_path=active_worktree_path,
+            branch_name=candidate_patch_spec.target_worktree,
+            reference_tests_dir=canonical_test_directory,
         )
 
         is_disqualified = False
-        disqual_reason = None
-        verdict = "PASSED" if sandbox_res.tests_passed else "FAILED_TESTS"
+        rejection_rationale = None
+        verdict_status = "PASSED" if sandbox_execution_verdict.tests_passed else "FAILED_TESTS"
 
-        if sandbox_res.lucky_pass_blocked:
+        if sandbox_execution_verdict.lucky_pass_blocked:
             is_disqualified = True
-            disqual_reason = "SECURITY_VIOLATION: LUCKY_PASS_ATTEMPT: Candidate modified test assertions."
-            verdict = "LUCKY_PASS_BLOCKED"
-        elif not sandbox_res.tests_passed:
+            rejection_rationale = "SECURITY_VIOLATION: LUCKY_PASS_ATTEMPT: Candidate modified test assertions."
+            verdict_status = "LUCKY_PASS_BLOCKED"
+        elif not sandbox_execution_verdict.tests_passed:
             is_disqualified = True
-            disqual_reason = f"TESTS_FAILED: Exit code {sandbox_res.exit_code}"
+            rejection_rationale = f"TESTS_FAILED: Exit code {sandbox_execution_verdict.exit_code}"
 
-        # 5. Record Trajectory in Memory Store
-        record = self.memory_store.record_trajectory(
-            strategy_id=candidate.strategy_id,
-            hypothesis_name=candidate.hypothesis_name,
-            worktree_name=candidate.target_worktree,
-            verdict=verdict,  # type: ignore
-            files_modified=[p.relative_path for p in candidate.patches],
-            error_summary=disqual_reason or sandbox_res.stderr or None,
+        # 5. Persist Trajectory Telemetry in Memory Engine
+        logged_trajectory = self.memory_store.record_trajectory(
+            strategy_id=candidate_patch_spec.strategy_id,
+            hypothesis_name=candidate_patch_spec.hypothesis_name,
+            worktree_name=candidate_patch_spec.target_worktree,
+            verdict=verdict_status,  # type: ignore
+            files_modified=[patch_entry.relative_path for patch_entry in candidate_patch_spec.patches],
+            error_summary=rejection_rationale or sandbox_execution_verdict.stderr or None,
         )
 
-        duration_ms = round((time.perf_counter() - start_time) * 1000.0, 2)
+        total_candidate_duration_ms = round(
+            (time.perf_counter() - hypothesis_execution_timer_start) * 1000.0, 2
+        )
 
         return WorktreeExecutionOutcome(
-            strategy_id=candidate.strategy_id,
-            hypothesis_name=candidate.hypothesis_name,
-            worktree_name=candidate.target_worktree,
-            worktree_path=str(wt_path),
-            critic_evaluation=critic_eval,
-            sandbox_result=sandbox_res,
-            trajectory_record=record,
+            strategy_id=candidate_patch_spec.strategy_id,
+            hypothesis_name=candidate_patch_spec.hypothesis_name,
+            worktree_name=candidate_patch_spec.target_worktree,
+            worktree_path=str(active_worktree_path),
+            critic_evaluation=critic_evaluation,
+            sandbox_result=sandbox_execution_verdict,
+            trajectory_record=logged_trajectory,
             is_disqualified=is_disqualified,
-            disqualification_reason=disqual_reason,
-            execution_duration_ms=duration_ms,
+            disqualification_reason=rejection_rationale,
+            execution_duration_ms=total_candidate_duration_ms,
         )
 
     def race_competing_hypotheses(
@@ -239,56 +273,65 @@ class WorktreeManager:
         ast_subgraph: ASTSubGraphResponse,
         telemetry: SyscallTelemetry,
     ) -> WorktreeTournamentRaceResult:
-        """Launches 3 concurrent candidate worktrees via ThreadPoolExecutor."""
-        total_start = time.perf_counter()
+        """Dispatches 3 competing candidate worktrees concurrently across thread workers."""
+        race_clock_start = time.perf_counter()
 
-        # Generate candidates via Meta Model Router
-        candidates = self.meta_router.synthesize_competing_hypotheses(ast_subgraph, telemetry)
+        # Synthesize 3 distinct repair strategies via Meta Model Router
+        candidate_patch_set = self.meta_router.synthesize_competing_hypotheses(ast_subgraph, telemetry)
 
-        outcomes: List[WorktreeExecutionOutcome] = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-            future_to_candidate = {
-                executor.submit(self.execute_single_candidate, c): c for c in candidates
+        collected_outcomes: List[WorktreeExecutionOutcome] = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as race_pool:
+            future_to_candidate_map = {
+                race_pool.submit(self.execute_single_candidate, patch_candidate): patch_candidate
+                for patch_candidate in candidate_patch_set
             }
-            for future in concurrent.futures.as_completed(future_to_candidate):
+            for completed_future in concurrent.futures.as_completed(future_to_candidate_map):
                 try:
-                    outcome = future.result()
-                    outcomes.append(outcome)
-                except Exception as ex:
-                    c = future_to_candidate[future]
-                    outcomes.append(
+                    candidate_outcome = completed_future.result()
+                    collected_outcomes.append(candidate_outcome)
+                except Exception as thread_dispatch_exception:
+                    faulty_candidate = future_to_candidate_map[completed_future]
+                    collected_outcomes.append(
                         WorktreeExecutionOutcome(
-                            strategy_id=c.strategy_id,
-                            hypothesis_name=c.hypothesis_name,
-                            worktree_name=c.target_worktree,
+                            strategy_id=faulty_candidate.strategy_id,
+                            hypothesis_name=faulty_candidate.hypothesis_name,
+                            worktree_name=faulty_candidate.target_worktree,
                             worktree_path="",
                             critic_evaluation=CriticEvaluation(
                                 is_approved=False,
                                 critic_score=0.0,
-                                critique_notes=str(ex),
+                                critique_notes=str(thread_dispatch_exception),
                                 syntax_valid=False,
                                 security_clean=False,
                             ),
                             is_disqualified=True,
-                            disqualification_reason=str(ex),
+                            disqualification_reason=str(thread_dispatch_exception),
                         )
                     )
 
-        # Sort outcomes to preserve canonical order (A, B, C)
-        order_map = {
+        # Canonical sort ordering: worktree_a (Winner), worktree_b (Lucky pass), worktree_c (Brute force)
+        canonical_display_order = {
             "worktree_a_refactor": 0,
             "worktree_b_adapter": 1,
             "worktree_c_guard": 2,
         }
-        outcomes.sort(key=lambda o: order_map.get(o.worktree_name, 99))
+        collected_outcomes.sort(key=lambda outcome: canonical_display_order.get(outcome.worktree_name, 99))
 
-        winner = next((o for o in outcomes if not o.is_disqualified and o.sandbox_result and o.sandbox_result.tests_passed), None)
-        total_duration = round((time.perf_counter() - total_start) * 1000.0, 2)
+        tournament_winner = next(
+            (
+                outcome
+                for outcome in collected_outcomes
+                if not outcome.is_disqualified
+                and outcome.sandbox_result
+                and outcome.sandbox_result.tests_passed
+            ),
+            None,
+        )
+        total_race_elapsed_ms = round((time.perf_counter() - race_clock_start) * 1000.0, 2)
 
         return WorktreeTournamentRaceResult(
-            total_candidates=len(candidates),
-            outcomes=outcomes,
-            winner_outcome=winner,
-            total_race_duration_ms=total_duration,
+            total_candidates=len(candidate_patch_set),
+            outcomes=collected_outcomes,
+            winner_outcome=tournament_winner,
+            total_race_duration_ms=total_race_elapsed_ms,
         )
-
