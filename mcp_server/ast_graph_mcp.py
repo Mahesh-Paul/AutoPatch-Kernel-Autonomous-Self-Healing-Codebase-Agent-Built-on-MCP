@@ -1,7 +1,7 @@
-"""AST 2-Hop Call-Graph MCP Server & Kernel Syscall Telemetry.
+"""Model Context Protocol (MCP) Server: Dual-Plane AST Graph & Kernel Telemetry.
 
-Provides surgical 2-hop neighborhood AST slices and kernel-level crash telemetry
-via standardized Model Context Protocol (MCP) tool interfaces.
+Provides surgical 2-hop neighborhood AST slicing and operating-system level crash telemetry
+conforming to the Anthropic/Model Context Protocol (MCP) tool specification standard.
 """
 from __future__ import annotations
 
@@ -11,16 +11,41 @@ import re
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from pydantic import BaseModel, Field
 
 
 # ==============================================================================
-# Pydantic v2 Schemas for MCP Payloads
+# Domain Exceptions
+# ==============================================================================
+
+class MCPInstrumentationError(Exception):
+    """Base exception for Model Context Protocol instrumentation failures."""
+    pass
+
+
+class ASTResolutionError(MCPInstrumentationError):
+    """Raised when an AST node coordinate cannot be resolved within source boundaries."""
+    pass
+
+
+class TelemetryCaptureError(MCPInstrumentationError):
+    """Raised when an isolated subprocess execution fails to emit valid telemetry."""
+    pass
+
+
+class UnknownMCPToolException(MCPInstrumentationError):
+    """Raised when an unsupported MCP tool identifier is invoked."""
+    pass
+
+
+# ==============================================================================
+# Pydantic v2 Schemas for MCP Tool Contracts
 # ==============================================================================
 
 class ASTNodeInfo(BaseModel):
+    """Represents a discrete Python function, method, or coroutine within an AST."""
     name: str
     file_path: str
     start_line: int
@@ -32,6 +57,7 @@ class ASTNodeInfo(BaseModel):
 
 
 class ASTSubGraphResponse(BaseModel):
+    """Surgical 2-hop causal neighborhood extracted around a crash frame."""
     focal_node: ASTNodeInfo
     upstream_callers: List[ASTNodeInfo] = Field(default_factory=list)
     downstream_callees: List[ASTNodeInfo] = Field(default_factory=list)
@@ -42,6 +68,7 @@ class ASTSubGraphResponse(BaseModel):
 
 
 class StackFrameInfo(BaseModel):
+    """Parsed stack trace execution frame."""
     file_path: str
     line_number: int
     function_name: str
@@ -49,6 +76,7 @@ class StackFrameInfo(BaseModel):
 
 
 class SyscallTelemetry(BaseModel):
+    """Low-level operating system and runtime crash telemetry envelope."""
     command: str
     cwd: str
     exit_code: int
@@ -67,226 +95,272 @@ class SyscallTelemetry(BaseModel):
 # ==============================================================================
 
 class ASTCallGraphEngine:
-    """Parses Python source files using standard library `ast`, builds caller/callee
-
-    dependency graphs, and extracts surgical 2-hop subgraphs.
+    """Performs static syntax tree analysis to isolate 2-hop causal neighborhoods.
+    
+    Rather than streaming whole-file or whole-repo contexts to language models (which
+    introduces context dilution and hallucination bugs), this engine extracts only:
+    - The focal crashing function definition.
+    - 2-hop upstream caller sites invoking the target routine.
+    - 1-hop downstream functions and mathematical helpers called by the target.
     """
 
     def __init__(self, workspace_root: Optional[str] = None):
         self.workspace_root = Path(workspace_root or os.getcwd()).resolve()
-        self._file_ast_cache: Dict[str, Tuple[ast.AST, List[str]]] = {}
+        # In-memory syntax tree cache to prevent redundant disk I/O on large multi-file targets
+        self._parsed_ast_cache: Dict[str, Tuple[ast.AST, List[str]]] = {}
 
-    def _get_ast(self, file_path: str) -> Tuple[Optional[ast.AST], List[str]]:
-        path_obj = Path(file_path).resolve()
-        path_str = str(path_obj)
-        if path_str in self._file_ast_cache:
-            return self._file_ast_cache[path_str]
+    def _load_and_parse_syntax_tree(
+        self, source_path_str: str
+    ) -> Tuple[Optional[ast.AST], List[str]]:
+        """Reads and compiles Python source into an Abstract Syntax Tree with line-index cache."""
+        normalized_path = Path(source_path_str).resolve()
+        canonical_key = str(normalized_path)
 
-        if not path_obj.exists() or not path_obj.is_file():
+        if canonical_key in self._parsed_ast_cache:
+            return self._parsed_ast_cache[canonical_key]
+
+        if not normalized_path.exists() or not normalized_path.is_file():
             return None, []
 
         try:
-            content = path_obj.read_text(encoding="utf-8")
-            tree = ast.parse(content, filename=path_str)
-            lines = content.splitlines()
-            self._file_ast_cache[path_str] = (tree, lines)
-            return tree, lines
-        except Exception:
+            raw_source_bytes = normalized_path.read_text(encoding="utf-8")
+            abstract_syntax_tree = ast.parse(raw_source_bytes, filename=canonical_key)
+            source_token_lines = raw_source_bytes.splitlines()
+            self._parsed_ast_cache[canonical_key] = (abstract_syntax_tree, source_token_lines)
+            return abstract_syntax_tree, source_token_lines
+        except (SyntaxError, UnicodeDecodeError, OSError):
             return None, []
 
-    def _get_node_source(self, lines: List[str], start_line: int, end_line: int) -> str:
-        if not lines or start_line <= 0:
+    def _slice_source_tokens(
+        self, token_lines: List[str], line_start: int, line_end: int
+    ) -> str:
+        """Extracts exact character ranges corresponding to an AST statement block."""
+        if not token_lines or line_start <= 0:
             return ""
-        s = max(0, start_line - 1)
-        e = min(len(lines), end_line)
-        return "\n".join(lines[s:e])
+        zero_indexed_start = max(0, line_start - 1)
+        clamped_end = min(len(token_lines), line_end)
+        return "\n".join(token_lines[zero_indexed_start:clamped_end])
 
     def find_enclosing_function(
-        self, tree: ast.AST, lines: List[str], line_number: int, file_path: str
+        self,
+        abstract_syntax_tree: ast.AST,
+        source_token_lines: List[str],
+        crash_line_number: int,
+        source_file_path: str,
     ) -> Optional[ASTNodeInfo]:
-        """Finds the most specific FunctionDef or AsyncFunctionDef containing line_number."""
-        matching_func: Optional[ast.FunctionDef | ast.AsyncFunctionDef] = None
+        """Identifies the most tightly bounded FunctionDef or AsyncFunctionDef enclosing crash_line_number."""
+        innermost_target_node: Optional[ast.FunctionDef | ast.AsyncFunctionDef] = None
 
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                start = getattr(node, "lineno", 0)
-                end = getattr(node, "end_lineno", start)
-                if start <= line_number <= end:
-                    if matching_func is None:
-                        matching_func = node
+        for candidate_element in ast.walk(abstract_syntax_tree):
+            if isinstance(candidate_element, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                element_start_lineno = getattr(candidate_element, "lineno", 0)
+                element_end_lineno = getattr(candidate_element, "end_lineno", element_start_lineno)
+
+                if element_start_lineno <= crash_line_number <= element_end_lineno:
+                    if innermost_target_node is None:
+                        innermost_target_node = candidate_element
                     else:
-                        # Pick tighter enclosing function (e.g. inner func or nested method)
-                        if (end - start) < (
-                            getattr(matching_func, "end_lineno", 0)
-                            - getattr(matching_func, "lineno", 0)
-                        ):
-                            matching_func = node
+                        # Favor inner nested routines or inner closures over outer container routines
+                        current_span = element_end_lineno - element_start_lineno
+                        existing_span = (
+                            getattr(innermost_target_node, "end_lineno", 0)
+                            - getattr(innermost_target_node, "lineno", 0)
+                        )
+                        if current_span < existing_span:
+                            innermost_target_node = candidate_element
 
-        if not matching_func:
+        if innermost_target_node is None:
             return None
 
-        start = getattr(matching_func, "lineno", 1)
-        end = getattr(matching_func, "end_lineno", start)
-        doc = ast.get_docstring(matching_func)
+        resolved_start = getattr(innermost_target_node, "lineno", 1)
+        resolved_end = getattr(innermost_target_node, "end_lineno", resolved_start)
+        docstring_content = ast.get_docstring(innermost_target_node)
 
-        # Extract signature line
-        sig = ""
-        if lines and start <= len(lines):
-            sig = lines[start - 1].strip()
+        raw_signature_line = ""
+        if source_token_lines and resolved_start <= len(source_token_lines):
+            raw_signature_line = source_token_lines[resolved_start - 1].strip()
 
         return ASTNodeInfo(
-            name=matching_func.name,
-            file_path=file_path,
-            start_line=start,
-            end_line=end,
-            docstring=doc,
-            signature=sig,
-            source_slice=self._get_node_source(lines, start, end),
-            ast_type=type(matching_func).__name__,
+            name=innermost_target_node.name,
+            file_path=source_file_path,
+            start_line=resolved_start,
+            end_line=resolved_end,
+            docstring=docstring_content,
+            signature=raw_signature_line,
+            source_slice=self._slice_source_tokens(source_token_lines, resolved_start, resolved_end),
+            ast_type=type(innermost_target_node).__name__,
         )
 
-    def _collect_callee_names(self, func_node: ast.AST) -> Set[str]:
-        """Collects function and method call names invoked inside an AST node."""
-        callees: Set[str] = set()
-        for sub in ast.walk(func_node):
-            if isinstance(sub, ast.Call):
-                if isinstance(sub.func, ast.Name):
-                    callees.add(sub.func.id)
-                elif isinstance(sub.func, ast.Attribute):
-                    callees.add(sub.func.attr)
-        return callees
+    def _collect_callee_identifiers(self, root_ast_node: ast.AST) -> Set[str]:
+        """Traverses an AST block to discover all direct function and attribute call names."""
+        callee_identifier_set: Set[str] = set()
+        for syntax_element in ast.walk(root_ast_node):
+            if isinstance(syntax_element, ast.Call):
+                target_callable = syntax_element.func
+                if isinstance(target_callable, ast.Name):
+                    callee_identifier_set.add(target_callable.id)
+                elif isinstance(target_callable, ast.Attribute):
+                    callee_identifier_set.add(target_callable.attr)
+        return callee_identifier_set
 
-    def _collect_imports_in_module(self, tree: ast.AST) -> List[str]:
-        imports = []
-        for node in ast.iter_child_nodes(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    imports.append(f"import {alias.name}" + (f" as {alias.asname}" if alias.asname else ""))
-            elif isinstance(node, ast.ImportFrom):
-                mod = node.module or ""
-                names = ", ".join(
-                    a.name + (f" as {a.asname}" if a.asname else "") for a in node.names
+    def _collect_import_statements(self, abstract_syntax_tree: ast.AST) -> List[str]:
+        """Harvests module-level import statements to preserve necessary namespace dependencies."""
+        collected_import_directives: List[str] = []
+        for syntax_element in ast.iter_child_nodes(abstract_syntax_tree):
+            if isinstance(syntax_element, ast.Import):
+                for alias_spec in syntax_element.names:
+                    suffix = f" as {alias_spec.asname}" if alias_spec.asname else ""
+                    collected_import_directives.append(f"import {alias_spec.name}{suffix}")
+            elif isinstance(syntax_element, ast.ImportFrom):
+                originating_module = syntax_element.module or ""
+                symbol_names = ", ".join(
+                    f"{a.name} as {a.asname}" if a.asname else a.name
+                    for a in syntax_element.names
                 )
-                imports.append(f"from {mod} import {names}")
-        return imports
+                collected_import_directives.append(f"from {originating_module} import {symbol_names}")
+        return collected_import_directives
 
-    def scan_project_functions(self, root_dir: Path) -> List[Tuple[Path, ast.FunctionDef | ast.AsyncFunctionDef, List[str]]]:
-        """Discovers all Python functions across the target workspace."""
-        functions = []
-        for py_path in root_dir.glob("**/*.py"):
-            if ".git" in py_path.parts or ".autopatch" in py_path.parts or "venv" in py_path.parts:
+    def scan_project_functions(
+        self, search_root_path: Path
+    ) -> List[Tuple[Path, ast.FunctionDef | ast.AsyncFunctionDef, List[str]]]:
+        """Scans the repository working tree to discover all candidate routine definitions."""
+        discovered_routines: List[Tuple[Path, ast.FunctionDef | ast.AsyncFunctionDef, List[str]]] = []
+        ignored_dir_fragments = {".git", ".autopatch", "venv", ".venv", "__pycache__"}
+
+        for python_source_path in search_root_path.glob("**/*.py"):
+            if any(fragment in python_source_path.parts for fragment in ignored_dir_fragments):
                 continue
-            tree, lines = self._get_ast(str(py_path))
-            if not tree:
+            syntax_tree, token_lines = self._load_and_parse_syntax_tree(str(python_source_path))
+            if not syntax_tree:
                 continue
-            for node in ast.walk(tree):
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    functions.append((py_path, node, lines))
-        return functions
+            for element in ast.walk(syntax_tree):
+                if isinstance(element, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    discovered_routines.append((python_source_path, element, token_lines))
+        return discovered_routines
+
+    def _build_project_symbol_manifest(
+        self, search_root_path: Path
+    ) -> Dict[str, List[Tuple[ASTNodeInfo, Set[str]]]]:
+        """Constructs an inverted call-graph index: function_name -> [(NodeInfo, set_of_callees)]."""
+        project_functions = self.scan_project_functions(search_root_path)
+        symbol_manifest: Dict[str, List[Tuple[ASTNodeInfo, Set[str]]]] = {}
+
+        for py_path, function_element, token_lines in project_functions:
+            routine_name = function_element.name
+            start_lineno = getattr(function_element, "lineno", 1)
+            end_lineno = getattr(function_element, "end_lineno", start_lineno)
+
+            node_descriptor = ASTNodeInfo(
+                name=routine_name,
+                file_path=str(py_path),
+                start_line=start_lineno,
+                end_line=end_lineno,
+                docstring=ast.get_docstring(function_element),
+                signature=token_lines[start_lineno - 1].strip() if start_lineno <= len(token_lines) else "",
+                source_slice=self._slice_source_tokens(token_lines, start_lineno, end_lineno),
+                ast_type=type(function_element).__name__,
+            )
+            invoked_callees = self._collect_callee_identifiers(function_element)
+            symbol_manifest.setdefault(routine_name, []).append((node_descriptor, invoked_callees))
+
+        return symbol_manifest
 
     def extract_subgraph(
         self, file_path: str, line_number: int, hop_depth: int = 2
     ) -> ASTSubGraphResponse:
-        """Extracts the 2-hop AST neighborhood centered around a crash frame."""
-        resolved_path = Path(file_path).resolve()
-        tree, lines = self._get_ast(str(resolved_path))
-        if not tree:
-            raise FileNotFoundError(f"Source file not accessible or unparseable: {file_path}")
+        """Extracts the 2-hop causal dependency subgraph centered on the target line."""
+        target_file_path = Path(file_path).resolve()
+        syntax_tree, token_lines = self._load_and_parse_syntax_tree(str(target_file_path))
 
-        # 1. Locate Focal Node
-        focal_node = self.find_enclosing_function(tree, lines, line_number, str(resolved_path))
-        if not focal_node:
-            # Fallback to whole file slice if not in a function
-            focal_node = ASTNodeInfo(
+        if not syntax_tree:
+            raise FileNotFoundError(f"Source file unparseable or inaccessible: {file_path}")
+
+        # 1. Isolate Focal Node
+        focal_symbol_descriptor = self.find_enclosing_function(
+            syntax_tree, token_lines, line_number, str(target_file_path)
+        )
+        if not focal_symbol_descriptor:
+            # Fallback to bounded module slice if crash occurred at module scope
+            lower_bound = max(1, line_number - 10)
+            upper_bound = min(len(token_lines), line_number + 10)
+            focal_symbol_descriptor = ASTNodeInfo(
                 name="<module>",
-                file_path=str(resolved_path),
-                start_line=max(1, line_number - 10),
-                end_line=min(len(lines), line_number + 10),
-                source_slice=self._get_node_source(lines, max(1, line_number - 10), min(len(lines), line_number + 10)),
+                file_path=str(target_file_path),
+                start_line=lower_bound,
+                end_line=upper_bound,
+                source_slice=self._slice_source_tokens(token_lines, lower_bound, upper_bound),
                 ast_type="Module",
             )
 
-        module_imports = self._collect_imports_in_module(tree)
+        module_import_directives = self._collect_import_statements(syntax_tree)
 
-        # 2. Discover Project-Wide Functions for Graph Traversal
-        search_root = resolved_path.parent
-        # Go up to workspace root or target project boundary
-        if self.workspace_root in resolved_path.parents:
-            search_root = self.workspace_root
+        # 2. Build Symbol Manifest across project boundary
+        analysis_search_root = (
+            self.workspace_root
+            if self.workspace_root in target_file_path.parents
+            else target_file_path.parent
+        )
+        symbol_manifest = self._build_project_symbol_manifest(analysis_search_root)
 
-        project_funcs = self.scan_project_functions(search_root)
+        # 3. Upstream Callers Traversal (BFS / DFS bounded by hop_depth)
+        upstream_caller_nodes: List[ASTNodeInfo] = []
+        visited_caller_coordinates: Set[Tuple[str, str]] = set()
 
-        # Build mapping of function name -> Node info & callees
-        func_registry: Dict[str, List[Tuple[ASTNodeInfo, Set[str]]]] = {}
-        for p_path, node, f_lines in project_funcs:
-            name = node.name
-            start = getattr(node, "lineno", 1)
-            end = getattr(node, "end_lineno", start)
-            info = ASTNodeInfo(
-                name=name,
-                file_path=str(p_path),
-                start_line=start,
-                end_line=end,
-                docstring=ast.get_docstring(node),
-                signature=f_lines[start - 1].strip() if start <= len(f_lines) else "",
-                source_slice=self._get_node_source(f_lines, start, end),
-                ast_type=type(node).__name__,
-            )
-            callees = self._collect_callee_names(node)
-            func_registry.setdefault(name, []).append((info, callees))
-
-        # 3. Upstream Callers (Who calls focal_node?)
-        upstream_callers: List[ASTNodeInfo] = []
-        visited_callers: Set[Tuple[str, str]] = set()
-
-        def find_callers_for(target_name: str, current_hop: int):
+        def _traverse_upstream_callers(target_symbol_name: str, current_hop: int) -> None:
             if current_hop > hop_depth:
                 return
-            for fname, entries in func_registry.items():
-                for c_info, c_callees in entries:
-                    if target_name in c_callees:
-                        key = (c_info.file_path, c_info.name)
-                        if key != (focal_node.file_path, focal_node.name) and key not in visited_callers:
-                            visited_callers.add(key)
-                            upstream_callers.append(c_info)
-                            find_callers_for(c_info.name, current_hop + 1)
+            for registered_name, manifest_entries in symbol_manifest.items():
+                for candidate_info, candidate_callees in manifest_entries:
+                    if target_symbol_name in candidate_callees:
+                        coordinate_key = (candidate_info.file_path, candidate_info.name)
+                        focal_key = (focal_symbol_descriptor.file_path, focal_symbol_descriptor.name)
+                        if coordinate_key != focal_key and coordinate_key not in visited_caller_coordinates:
+                            visited_caller_coordinates.add(coordinate_key)
+                            upstream_caller_nodes.append(candidate_info)
+                            _traverse_upstream_callers(candidate_info.name, current_hop + 1)
 
-        find_callers_for(focal_node.name, 1)
+        _traverse_upstream_callers(focal_symbol_descriptor.name, 1)
 
-        # 4. Downstream Callees (Who does focal_node call?)
-        downstream_callees: List[ASTNodeInfo] = []
-        visited_callees: Set[Tuple[str, str]] = set()
+        # 4. Downstream Callees Traversal
+        downstream_callee_nodes: List[ASTNodeInfo] = []
+        visited_callee_coordinates: Set[Tuple[str, str]] = set()
 
-        # Find direct focal node ast
+        # Extract direct callees invoked within focal block
         focal_ast_node = None
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == focal_node.name:
-                focal_ast_node = node
+        for element in ast.walk(syntax_tree):
+            if (
+                isinstance(element, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and element.name == focal_symbol_descriptor.name
+            ):
+                focal_ast_node = element
                 break
 
-        focal_direct_callees = self._collect_callee_names(focal_ast_node) if focal_ast_node else set()
+        direct_callee_identifiers = (
+            self._collect_callee_identifiers(focal_ast_node) if focal_ast_node else set()
+        )
 
-        def find_callees_for(callee_names: Set[str], current_hop: int):
+        def _traverse_downstream_callees(target_callees: Set[str], current_hop: int) -> None:
             if current_hop > hop_depth:
                 return
-            for cname in callee_names:
-                if cname in func_registry:
-                    for d_info, d_callees in func_registry[cname]:
-                        key = (d_info.file_path, d_info.name)
-                        if key != (focal_node.file_path, focal_node.name) and key not in visited_callees:
-                            visited_callees.add(key)
-                            downstream_callees.append(d_info)
-                            find_callees_for(d_callees, current_hop + 1)
+            for callee_id in target_callees:
+                if callee_id in symbol_manifest:
+                    for downstream_info, child_callees in symbol_manifest[callee_id]:
+                        coordinate_key = (downstream_info.file_path, downstream_info.name)
+                        focal_key = (focal_symbol_descriptor.file_path, focal_symbol_descriptor.name)
+                        if coordinate_key != focal_key and coordinate_key not in visited_callee_coordinates:
+                            visited_callee_coordinates.add(coordinate_key)
+                            downstream_callee_nodes.append(downstream_info)
+                            _traverse_downstream_callees(child_callees, current_hop + 1)
 
-        find_callees_for(focal_direct_callees, 1)
+        _traverse_downstream_callees(direct_callee_identifiers, 1)
 
         return ASTSubGraphResponse(
-            focal_node=focal_node,
-            upstream_callers=upstream_callers,
-            downstream_callees=downstream_callees,
-            module_imports=module_imports,
+            focal_node=focal_symbol_descriptor,
+            upstream_callers=upstream_caller_nodes,
+            downstream_callees=downstream_callee_nodes,
+            module_imports=module_import_directives,
             hop_depth=hop_depth,
-            total_nodes_in_neighborhood=1 + len(upstream_callers) + len(downstream_callees),
+            total_nodes_in_neighborhood=1 + len(upstream_caller_nodes) + len(downstream_callee_nodes),
         )
 
 
@@ -295,29 +369,33 @@ class ASTCallGraphEngine:
 # ==============================================================================
 
 class SyscallTelemetryEngine:
-    """Executes a failing command in an isolated subprocess and inspects OS-level
-
-    failures and Python runtime crash traces.
+    """Subprocess supervisor that captures OS-level syscall signatures and runtime exception traces.
+    
+    Standard stderr output often obscures underlying kernel anomalies. This engine extracts:
+    - POSIX / Win32 syscall error codes (ENOENT, EACCES, EPERM, ENOMEM).
+    - Unhandled Python exception hierarchy signatures.
+    - Deepest project-internal stack frame coordinate for surgical AST pinning.
     """
 
-    KNOWN_SYSCALL_ERRORS = [
-        "ENOENT",  # File or directory not found
-        "EACCES",  # Permission denied
-        "EPERM",   # Operation not permitted
-        "ECONNREFUSED",  # Connection refused
-        "ETIMEDOUT",     # Operation timed out
-        "ENOMEM",  # Out of memory
-    ]
+    KNOWN_SYSCALL_SIGNATURES = (
+        "ENOENT",       # Path or library target not found
+        "EACCES",       # Filesystem permission barrier
+        "EPERM",        # Operation disallowed by kernel capabilities
+        "ECONNREFUSED", # TCP socket rejected
+        "ETIMEDOUT",    # Network roundtrip timeout
+        "ENOMEM",       # Cgroup or virtual memory allocation failure
+        "EDEADLK",      # Futex deadlock condition
+    )
 
-    FRAME_REGEX = re.compile(
+    REGEX_TRACEBACK_FRAME = re.compile(
         r'File "(?P<file>[^"]+)", line (?P<line>\d+), in (?P<func>\w+)(?:\n\s+(?P<stmt>.+))?',
         re.MULTILINE,
     )
-    EXCEPTION_REGEX = re.compile(
+    REGEX_RUNTIME_EXCEPTION = re.compile(
         r"^(?P<exc>[A-Za-z_][A-Za-z0-9_]*Error|[A-Za-z_][A-Za-z0-9_]*Exception): (?P<msg>.+)$",
         re.MULTILINE,
     )
-    MISSING_PATH_REGEX = re.compile(
+    REGEX_UNRESOLVED_PATH = re.compile(
         r"(?:No such file or directory|cannot open file|cannot find module|ModuleNotFoundError|KeyError)[:\s]+['\"]?(?P<path>[^'\"\n\r]+)['\"]?",
         re.IGNORECASE,
     )
@@ -325,99 +403,97 @@ class SyscallTelemetryEngine:
     @classmethod
     def capture(
         cls,
-        command: str | List[str],
+        command: Union[str, List[str]],
         cwd: Optional[str] = None,
         timeout_seconds: float = 30.0,
         env_overrides: Optional[Dict[str, str]] = None,
     ) -> SyscallTelemetry:
-        """Runs the given command, recording runtime output and extracting root failure coordinates."""
-        execution_cwd = Path(cwd or os.getcwd()).resolve()
-        cmd_str = command if isinstance(command, str) else " ".join(command)
+        """Executes a target binary/test suite in a controlled subprocess, capturing complete telemetry."""
+        execution_working_dir = Path(cwd or os.getcwd()).resolve()
+        shell_command_representation = command if isinstance(command, str) else " ".join(command)
 
-        env = os.environ.copy()
+        execution_environment = os.environ.copy()
         if env_overrides:
-            env.update(env_overrides)
+            execution_environment.update(env_overrides)
 
-        start_time = time.perf_counter()
+        clock_start_ns = time.perf_counter()
         try:
-            process = subprocess.run(
+            isolated_proc = subprocess.run(
                 command,
-                cwd=str(execution_cwd),
+                cwd=str(execution_working_dir),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
                 shell=isinstance(command, str),
                 timeout=timeout_seconds,
-                env=env,
+                env=execution_environment,
             )
-            stdout = process.stdout
-            stderr = process.stderr
-            exit_code = process.returncode
-        except subprocess.TimeoutExpired as te:
-            stdout = te.stdout or "" if isinstance(te.stdout, str) else ""
-            stderr = f"TIMEOUT: Command exceeded {timeout_seconds}s"
-            exit_code = -9
-        except Exception as ex:
-            stdout = ""
-            stderr = f"Execution invocation failed: {str(ex)}"
-            exit_code = -1
+            raw_stdout_stream = isolated_proc.stdout
+            raw_stderr_stream = isolated_proc.stderr
+            process_exit_code = isolated_proc.returncode
+        except subprocess.TimeoutExpired as timeout_err:
+            raw_stdout_stream = timeout_err.stdout or "" if isinstance(timeout_err.stdout, str) else ""
+            raw_stderr_stream = f"TIMEOUT: Execution exceeded {timeout_seconds}s SLA"
+            process_exit_code = -9
+        except Exception as invocation_err:
+            raw_stdout_stream = ""
+            raw_stderr_stream = f"Process invocation failure: {str(invocation_err)}"
+            process_exit_code = -1
 
-        duration_ms = round((time.perf_counter() - start_time) * 1000.0, 2)
-        combined_output = f"{stdout}\n{stderr}"
+        elapsed_duration_ms = round((time.perf_counter() - clock_start_ns) * 1000.0, 2)
+        aggregated_stream = f"{raw_stdout_stream}\n{raw_stderr_stream}"
 
-        # 1. Detect Syscall and OS Errors
-        detected_syscalls: List[str] = []
-        for code in cls.KNOWN_SYSCALL_ERRORS:
-            if code in combined_output:
-                detected_syscalls.append(code)
+        # 1. Parse Syscall / Kernel Signatures
+        trapped_os_signals = [
+            code for code in cls.KNOWN_SYSCALL_SIGNATURES if code in aggregated_stream
+        ]
 
-        # 2. Extract Python Exceptions
-        detected_exceptions = [
-            f"{m.group('exc')}: {m.group('msg')}"
-            for m in cls.EXCEPTION_REGEX.finditer(combined_output)
+        # 2. Extract Top-Level Runtime Exceptions
+        captured_runtime_faults = [
+            f"{match.group('exc')}: {match.group('msg')}"
+            for match in cls.REGEX_RUNTIME_EXCEPTION.finditer(aggregated_stream)
         ]
 
         # 3. Parse Stack Frames
-        frames: List[StackFrameInfo] = []
-        for m in cls.FRAME_REGEX.finditer(combined_output):
-            frames.append(
+        parsed_stack_frames: List[StackFrameInfo] = []
+        for frame_match in cls.REGEX_TRACEBACK_FRAME.finditer(aggregated_stream):
+            parsed_stack_frames.append(
                 StackFrameInfo(
-                    file_path=m.group("file"),
-                    line_number=int(m.group("line")),
-                    function_name=m.group("func"),
-                    code_statement=(m.group("stmt") or "").strip(),
+                    file_path=frame_match.group("file"),
+                    line_number=int(frame_match.group("line")),
+                    function_name=frame_match.group("func"),
+                    code_statement=(frame_match.group("stmt") or "").strip(),
                 )
             )
 
-        # Identify Primary Failure Frame (deepest frame inside the user's project)
-        primary_frame: Optional[StackFrameInfo] = None
-        for frame in reversed(frames):
-            p = Path(frame.file_path)
-            # Prioritize project files over python stdlib / site-packages
-            if "site-packages" not in str(p) and "Lib" not in str(p) and p.exists():
-                primary_frame = frame
+        # 4. Pin Primary Failure Frame (Filter out stdlib and vendor site-packages)
+        focal_root_cause_frame: Optional[StackFrameInfo] = None
+        for candidate_frame in reversed(parsed_stack_frames):
+            frame_path = Path(candidate_frame.file_path)
+            if "site-packages" not in str(frame_path) and "Lib" not in str(frame_path) and frame_path.exists():
+                focal_root_cause_frame = candidate_frame
                 break
-        if not primary_frame and frames:
-            primary_frame = frames[-1]
+        if not focal_root_cause_frame and parsed_stack_frames:
+            focal_root_cause_frame = parsed_stack_frames[-1]
 
-        # 4. Extract Missing Paths / Environment Variables
-        missing_paths = [
-            m.group("path").strip()
-            for m in cls.MISSING_PATH_REGEX.finditer(combined_output)
-        ]
+        # 5. Extract Missing Dependency Paths
+        unresolved_dependency_paths = list({
+            path_match.group("path").strip()
+            for path_match in cls.REGEX_UNRESOLVED_PATH.finditer(aggregated_stream)
+        })
 
         return SyscallTelemetry(
-            command=cmd_str,
-            cwd=str(execution_cwd),
-            exit_code=exit_code,
-            duration_ms=duration_ms,
-            stdout=stdout,
-            stderr=stderr,
-            detected_exceptions=detected_exceptions,
-            detected_syscall_errors=detected_syscalls,
-            failing_frames=frames,
-            primary_failure_frame=primary_frame,
-            missing_paths_or_configs=list(set(missing_paths)),
+            command=shell_command_representation,
+            cwd=str(execution_working_dir),
+            exit_code=process_exit_code,
+            duration_ms=elapsed_duration_ms,
+            stdout=raw_stdout_stream,
+            stderr=raw_stderr_stream,
+            detected_exceptions=captured_runtime_faults,
+            detected_syscall_errors=trapped_os_signals,
+            failing_frames=parsed_stack_frames,
+            primary_failure_frame=focal_root_cause_frame,
+            missing_paths_or_configs=unresolved_dependency_paths,
         )
 
 
@@ -426,7 +502,7 @@ class SyscallTelemetryEngine:
 # ==============================================================================
 
 class AutoPatchMCPServer:
-    """Production-grade MCP Server exposing AST subgraph extraction and syscall telemetry."""
+    """Production-grade Model Context Protocol (MCP) tool implementation server."""
 
     def __init__(self, workspace_root: Optional[str] = None):
         self.workspace_root = Path(workspace_root or os.getcwd()).resolve()
@@ -434,7 +510,7 @@ class AutoPatchMCPServer:
         self.telemetry_engine = SyscallTelemetryEngine()
 
     def get_tool_definitions(self) -> List[Dict[str, Any]]:
-        """Returns standard MCP tool declarations for client discovery."""
+        """Returns MCP tool declarations for dynamic client capability discovery."""
         return [
             {
                 "name": "extract_ast_subgraph",
@@ -482,18 +558,17 @@ class AutoPatchMCPServer:
     def execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Dispatches tool execution according to MCP specification."""
         if tool_name == "extract_ast_subgraph":
-            res = self.ast_engine.extract_subgraph(
+            subgraph_result = self.ast_engine.extract_subgraph(
                 file_path=arguments["file_path"],
                 line_number=int(arguments["line_number"]),
                 hop_depth=int(arguments.get("hop_depth", 2)),
             )
-            return res.model_dump()
+            return subgraph_result.model_dump()
         elif tool_name == "capture_syscall_telemetry":
-            res = self.telemetry_engine.capture(
+            telemetry_result = self.telemetry_engine.capture(
                 command=arguments["command"],
                 cwd=arguments.get("cwd", str(self.workspace_root)),
             )
-            return res.model_dump()
+            return telemetry_result.model_dump()
         else:
-            raise ValueError(f"Unknown MCP tool requested: {tool_name}")
-
+            raise UnknownMCPToolException(f"Unsupported MCP tool identifier requested: '{tool_name}'")

@@ -15,10 +15,25 @@ from pydantic import BaseModel, Field
 
 
 # ==============================================================================
+# Domain Exceptions
+# ==============================================================================
+
+class SMTVerificationException(Exception):
+    """Base exception for formal SMT verification anomalies."""
+    pass
+
+
+class SMTModelExtractionError(SMTVerificationException):
+    """Raised when counterexample model interpretation fails."""
+    pass
+
+
+# ==============================================================================
 # Pydantic Schemas for Formal Proofs
 # ==============================================================================
 
 class Z3VerificationCertificate(BaseModel):
+    """Immutable formal verification attestation envelope."""
     certificate_id: str
     target_function: str
     verdict: Literal["UNSAT_PROVEN_SAFE", "SAT_COUNTEREXAMPLE_FOUND", "UNKNOWN"]
@@ -33,6 +48,7 @@ class Z3VerificationCertificate(BaseModel):
 
 
 class Z3VerificationResult(BaseModel):
+    """Result envelope containing solver convergence state and mathematical certificate."""
     is_verified: bool
     verdict: Literal["UNSAT_PROVEN_SAFE", "SAT_COUNTEREXAMPLE_FOUND", "UNKNOWN"]
     counterexample: Optional[Dict[str, Any]] = None
@@ -46,16 +62,22 @@ class Z3VerificationResult(BaseModel):
 # ==============================================================================
 
 class Z3TheoremProver:
-    """Constructs First-Order Logic SMT formulas to prove safety properties of code."""
+    """Constructs First-Order Logic SMT formulas to prove safety properties of code.
+    
+    Proof Strategy (Proof by Contradiction / CEGIS):
+    To formally prove that Pre(x) => Post(x) holds universally across infinite inputs:
+    1. Assert Pre(x)
+    2. Assert NOT(Post(x))
+    3. If the solver evaluates UNSAT (Unsatisfiable), no input state exists where the safety
+       invariant can be violated. The patch is mathematically sound.
+    4. If the solver evaluates SAT, the satisfying model is an exact counterexample witness.
+    """
 
     @classmethod
     def verify_unpatched_discount_logic(cls) -> Z3VerificationResult:
-        """Evaluates unpatched `calculate_discount` formula in Z3 to prove that a crash
-
-        state (ZeroDivisionError / negative discount) is SATISFIABLE (bug exists).
-        """
-        start = time.perf_counter()
-        solver = z3.Solver()
+        """Evaluates unpatched calculate_discount to isolate the ZeroDivisionError counterexample."""
+        solver_clock_start_ns = time.perf_counter()
+        smt_prover_instance = z3.Solver()
 
         # Domain Variables
         order_total = z3.Real("order_total")
@@ -63,36 +85,48 @@ class Z3TheoremProver:
         active_promos_count = z3.Int("active_promos_count")
         max_discount_slots = z3.IntVal(4)
 
-        # Pre-conditions (Valid domain inputs)
-        pre_cond = z3.And(
+        # Pre-conditions (Valid domain input bounds)
+        pre_conditions = z3.And(
             order_total > 0,
             tier_multiplier >= 1.0,
             active_promos_count >= 0,
             active_promos_count <= 10,
         )
-        solver.add(pre_cond)
+        smt_prover_instance.add(pre_conditions)
 
         # In unpatched code: promo_denominator = max_discount_slots - active_promos_count
         promo_denominator = max_discount_slots - active_promos_count
 
         # Violation condition: Division by zero (denominator == 0)
-        violation = (promo_denominator == 0)
-        solver.add(violation)
+        violation_predicate = (promo_denominator == 0)
+        smt_prover_instance.add(violation_predicate)
 
-        check_res = solver.check()
-        duration_ms = round((time.perf_counter() - start) * 1000.0, 2)
+        satisfiability_outcome = smt_prover_instance.check()
+        solver_latency_ms = round((time.perf_counter() - solver_clock_start_ns) * 1000.0, 2)
 
-        if check_res == z3.sat:
-            model = solver.model()
+        if satisfiability_outcome == z3.sat:
+            sat_counterexample_model = smt_prover_instance.model()
             counterexample = {
-                "active_promos_count": int(str(model[active_promos_count])),
-                "tier_multiplier": float(str(model[tier_multiplier].as_decimal(4) if hasattr(model[tier_multiplier], "as_decimal") else str(model[tier_multiplier]))),
-                "order_total": float(str(model[order_total].as_decimal(4) if hasattr(model[order_total], "as_decimal") else str(model[order_total]))),
-                "evaluated_denominator": 4 - int(str(model[active_promos_count])),
+                "active_promos_count": int(str(sat_counterexample_model[active_promos_count])),
+                "tier_multiplier": float(
+                    str(
+                        sat_counterexample_model[tier_multiplier].as_decimal(4)
+                        if hasattr(sat_counterexample_model[tier_multiplier], "as_decimal")
+                        else str(sat_counterexample_model[tier_multiplier])
+                    )
+                ),
+                "order_total": float(
+                    str(
+                        sat_counterexample_model[order_total].as_decimal(4)
+                        if hasattr(sat_counterexample_model[order_total], "as_decimal")
+                        else str(sat_counterexample_model[order_total])
+                    )
+                ),
+                "evaluated_denominator": 4 - int(str(sat_counterexample_model[active_promos_count])),
             }
-            smt2_str = solver.to_smt2()
-            cert_id = f"CERT-UNPATCHED-BUG-{hashlib.sha256(smt2_str.encode()).hexdigest()[:12]}"
-            digest = hashlib.sha256(f"{cert_id}:{smt2_str}".encode()).hexdigest()
+            serialized_smt2_definitions = smt_prover_instance.to_smt2()
+            cert_id = f"CERT-UNPATCHED-BUG-{hashlib.sha256(serialized_smt2_definitions.encode()).hexdigest()[:12]}"
+            certificate_sha256_digest = hashlib.sha256(f"{cert_id}:{serialized_smt2_definitions}".encode()).hexdigest()
 
             certificate = Z3VerificationCertificate(
                 certificate_id=cert_id,
@@ -105,9 +139,9 @@ class Z3TheoremProver:
                     "0 <= active_promos_count <= 10",
                 ],
                 post_conditions=["denominator != 0", "discount_ratio >= 0.0"],
-                smt_lib2_code=smt2_str,
+                smt_lib2_code=serialized_smt2_definitions,
                 counterexample=counterexample,
-                sha256_digest=digest,
+                sha256_digest=certificate_sha256_digest,
             )
 
             return Z3VerificationResult(
@@ -115,28 +149,25 @@ class Z3TheoremProver:
                 verdict="SAT_COUNTEREXAMPLE_FOUND",
                 counterexample=counterexample,
                 certificate=certificate,
-                duration_ms=duration_ms,
+                duration_ms=solver_latency_ms,
                 proof_summary=(
                     f"BUG VERIFIED: Z3 found SAT counterexample at active_promos_count={counterexample['active_promos_count']} "
                     f"causing division by zero (denominator={counterexample['evaluated_denominator']})."
                 ),
             )
         else:
-            raise RuntimeError("Unexpected solver result for unpatched logic")
+            raise SMTVerificationException("Unexpected solver result: expected SAT for unpatched buggy logic")
 
     @classmethod
     def verify_patched_discount_logic(cls) -> Z3VerificationResult:
-        """Formally proves that patched `calculate_discount` formula is mathematically
-
-        guaranteed to NEVER divide by zero, NEVER produce negative discounts, and NEVER
-        exceed MAX_ALLOWABLE_DISCOUNT_PERCENT across infinite real inputs.
+        """Formally proves that patched calculate_discount is mathematically guaranteed safe.
         
         SMT proof strategy:
         We assert Pre-conditions and the NEGATION of Post-conditions.
         If the solver returns `UNSAT`, no counterexample exists anywhere in the domain.
         """
-        start = time.perf_counter()
-        solver = z3.Solver()
+        solver_clock_start_ns = time.perf_counter()
+        smt_prover_instance = z3.Solver()
 
         # Domain Variables
         order_total = z3.Real("order_total")
@@ -153,29 +184,27 @@ class Z3TheoremProver:
             active_promos_count >= 0,
             active_promos_count <= 50,
         ]
-        solver.add(z3.And(*pre_conditions))
+        smt_prover_instance.add(z3.And(*pre_conditions))
 
         # 2. Symbolic Modeling of Patched AST Implementation:
-        # safe_denominator = max(1, MAX_DISCOUNT_SLOTS - min(active_promos_count, MAX_DISCOUNT_SLOTS - 1))
-        # In SMT logic:
-        # bounded_promos = If(active_promos_count < 3, active_promos_count, 3)
-        # raw_denom = max_discount_slots - bounded_promos
-        # safe_denominator = If(raw_denom > 1, raw_denom, 1)
-        bounded_promos = z3.If(active_promos_count < (max_discount_slots - 1), active_promos_count, max_discount_slots - 1)
+        bounded_promos = z3.If(
+            active_promos_count < (max_discount_slots - 1),
+            active_promos_count,
+            max_discount_slots - 1,
+        )
         raw_denom = max_discount_slots - bounded_promos
         safe_denominator = z3.If(raw_denom > 1, raw_denom, 1)
 
-        # discount_ratio = min(MAX_ALLOWABLE_DISCOUNT_PERCENT, (tier_multiplier * 0.05) / safe_denominator)
         unbounded_ratio = (tier_multiplier * z3.RealVal("0.05")) / z3.ToReal(safe_denominator)
-        discount_ratio = z3.If(unbounded_ratio < max_allowed_discount_pct, unbounded_ratio, max_allowed_discount_pct)
+        discount_ratio = z3.If(
+            unbounded_ratio < max_allowed_discount_pct,
+            unbounded_ratio,
+            max_allowed_discount_pct,
+        )
 
         calculated_discount = order_total * discount_ratio
 
         # 3. Post-Condition Invariants (Safety Properties)
-        # Invariant 1: safe_denominator is strictly positive (> 0) -> No ZeroDivisionError
-        # Invariant 2: discount_ratio >= 0.0 -> No negative discounts
-        # Invariant 3: calculated_discount <= order_total * 0.50 -> Cap strictly respected
-        # Invariant 4: calculated_discount < order_total -> Never exceeds total order value
         safety_invariants = z3.And(
             safe_denominator >= 1,
             discount_ratio >= 0.0,
@@ -184,17 +213,16 @@ class Z3TheoremProver:
         )
 
         # 4. Prove by Contradiction: Assert NOT(safety_invariants)
-        # If solver is UNSAT, safety is formally proven!
-        solver.add(z3.Not(safety_invariants))
+        smt_prover_instance.add(z3.Not(safety_invariants))
 
-        check_res = solver.check()
-        duration_ms = round((time.perf_counter() - start) * 1000.0, 2)
+        satisfiability_outcome = smt_prover_instance.check()
+        solver_latency_ms = round((time.perf_counter() - solver_clock_start_ns) * 1000.0, 2)
 
-        smt2_str = solver.to_smt2()
-        cert_id = f"Z3-PROVEN-{hashlib.sha256(smt2_str.encode()).hexdigest()[:16]}"
-        digest = hashlib.sha256(f"{cert_id}:{smt2_str}:UNSAT".encode()).hexdigest()
+        serialized_smt2_definitions = smt_prover_instance.to_smt2()
+        cert_id = f"Z3-PROVEN-{hashlib.sha256(serialized_smt2_definitions.encode()).hexdigest()[:16]}"
+        certificate_sha256_digest = hashlib.sha256(f"{cert_id}:{serialized_smt2_definitions}:UNSAT".encode()).hexdigest()
 
-        if check_res == z3.unsat:
+        if satisfiability_outcome == z3.unsat:
             certificate = Z3VerificationCertificate(
                 certificate_id=cert_id,
                 target_function="target_app.processor.calculate_discount",
@@ -211,9 +239,9 @@ class Z3TheoremProver:
                     "calculated_discount <= order_total * 0.50 (Max cap strictly enforced)",
                     "calculated_discount < order_total (Customer never charged negative net)",
                 ],
-                smt_lib2_code=smt2_str,
+                smt_lib2_code=serialized_smt2_definitions,
                 counterexample=None,
-                sha256_digest=digest,
+                sha256_digest=certificate_sha256_digest,
             )
 
             return Z3VerificationResult(
@@ -221,7 +249,7 @@ class Z3TheoremProver:
                 verdict="UNSAT_PROVEN_SAFE",
                 counterexample=None,
                 certificate=certificate,
-                duration_ms=duration_ms,
+                duration_ms=solver_latency_ms,
                 proof_summary=(
                     "FORMALLY VERIFIED (UNSAT): Z3 theorem prover mathematically proved that for all "
                     "infinite inputs in the domain, ZeroDivisionError, negative discounts, and invariant violations "
@@ -229,11 +257,11 @@ class Z3TheoremProver:
                 ),
             )
         else:
-            model = solver.model()
+            sat_counterexample_model = smt_prover_instance.model()
             return Z3VerificationResult(
                 is_verified=False,
                 verdict="SAT_COUNTEREXAMPLE_FOUND",
-                counterexample={"model": str(model)},
+                counterexample={"model": str(sat_counterexample_model)},
                 certificate=Z3VerificationCertificate(
                     certificate_id=cert_id,
                     target_function="target_app.processor.calculate_discount",
@@ -241,9 +269,9 @@ class Z3TheoremProver:
                     is_safe=False,
                     pre_conditions=[],
                     post_conditions=[],
-                    smt_lib2_code=smt2_str,
-                    sha256_digest=digest,
+                    smt_lib2_code=serialized_smt2_definitions,
+                    sha256_digest=certificate_sha256_digest,
                 ),
-                duration_ms=duration_ms,
-                proof_summary=f"Counterexample detected: {model}",
+                duration_ms=solver_latency_ms,
+                proof_summary=f"Counterexample detected: {sat_counterexample_model}",
             )

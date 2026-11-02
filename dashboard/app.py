@@ -96,10 +96,10 @@ def get_dashboard_ui():
 
 @app.get("/api/status")
 def get_system_status():
-    """Returns the current state of the AutoPatch-Kernel engine, MCP server, and Meta models."""
-    processor_file = str(WORKSPACE_ROOT / "target_app" / "processor.py")
-    subgraph = ast_engine.extract_subgraph(processor_file, line_number=26)
-    z3_proof = Z3TheoremProver.verify_patched_discount_logic()
+    """Returns the operational state of the AutoPatch-Kernel engine, MCP server, and Meta models."""
+    target_processor_module = str(WORKSPACE_ROOT / "target_app" / "processor.py")
+    extracted_ast_neighborhood = ast_engine.extract_subgraph(target_processor_module, line_number=26)
+    formal_invariance_proof = Z3TheoremProver.verify_patched_discount_logic()
 
     return {
         "status": "ONLINE",
@@ -114,10 +114,10 @@ def get_system_status():
             "muse_voice_transcribe": {"status": "READY", "role": "Live Voice Incident Trigger"},
             "sam_3_1": {"status": "READY", "role": "Visual Flamegraph & Telemetry Segmentation"},
         },
-        "ast_focal_node": subgraph.focal_node.model_dump(),
-        "z3_verified": z3_proof.is_verified,
-        "z3_certificate_id": z3_proof.certificate.certificate_id,
-        "z3_sha256": z3_proof.certificate.sha256_digest,
+        "ast_focal_node": extracted_ast_neighborhood.focal_node.model_dump(),
+        "z3_verified": formal_invariance_proof.is_verified,
+        "z3_certificate_id": formal_invariance_proof.certificate.certificate_id,
+        "z3_sha256": formal_invariance_proof.certificate.sha256_digest,
     }
 
 

@@ -7,7 +7,6 @@ shadow traffic replay engine measuring latency and exception delta.
 from __future__ import annotations
 
 import hashlib
-import importlib
 import math
 import os
 import random
@@ -16,9 +15,28 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from pydantic import BaseModel, Field
+
+
+# ==============================================================================
+# Domain Exceptions
+# ==============================================================================
+
+class SandboxSecurityException(Exception):
+    """Base exception for sandbox security violations and isolation boundaries."""
+    pass
+
+
+class LuckyPassSecurityViolation(SandboxSecurityException):
+    """Raised when an autonomous agent attempts to weaken, alter, or delete test assertions."""
+    pass
+
+
+class ShadowTrafficReplayError(SandboxSecurityException):
+    """Raised when differential synthetic traffic replay encounters unrecoverable harness faults."""
+    pass
 
 
 # ==============================================================================
@@ -26,6 +44,7 @@ from pydantic import BaseModel, Field
 # ==============================================================================
 
 class ShadowTrafficMetrics(BaseModel):
+    """Quantifies statistical latency shifts and regression rates across shadow workloads."""
     total_payloads: int = 50
     baseline_exception_count: int
     candidate_exception_count: int
@@ -40,6 +59,7 @@ class ShadowTrafficMetrics(BaseModel):
 
 
 class SandboxRunResult(BaseModel):
+    """Complete cryptographic audit and test execution verdict for an isolated worktree."""
     branch_or_worktree: str
     tests_passed: bool
     lucky_pass_blocked: bool
@@ -57,182 +77,206 @@ class SandboxRunResult(BaseModel):
 # ==============================================================================
 
 class SandboxRunner:
-    """Executes tests and benchmarks under strict security guardrails."""
+    """Executes tests and benchmarks under strict security guardrails.
+    
+    In autonomous software healing, language models frequently engage in 'Reward Hacking'
+    (deleting asserts, removing test cases, or swallowing exceptions to force exit code 0).
+    This runner prevents test-tampering by enforcing:
+    1. Pre-execution CRLF-normalized SHA-256 Merkle root locking.
+    2. Read-only filesystem attributes (`chmod 0444`) on all test modules.
+    3. Post-execution Merkle tree integrity verification.
+    """
 
     def __init__(self, workspace_root: Optional[str] = None):
         self.workspace_root = Path(workspace_root or os.getcwd()).resolve()
 
     def _compute_directory_hashes(self, target_dir: Path) -> Dict[str, str]:
-        """Calculates SHA-256 hashes for all files in the given directory."""
-        hashes: Dict[str, str] = {}
+        """Calculates canonical SHA-256 hashes for all test modules in the directory tree.
+        
+        CRITICAL: We normalize all CRLF line endings to LF before hashing. Cross-platform
+        Git checkouts on Windows often convert `\n` to `\r\n`, which would otherwise
+        trigger false-positive tampering alarms.
+        """
+        canonical_merkle_manifest: Dict[str, str] = {}
         if not target_dir.exists():
-            return hashes
+            return canonical_merkle_manifest
 
-        for p in target_dir.rglob("*"):
-            if p.is_file() and "__pycache__" not in p.parts:
+        for candidate_artifact_path in target_dir.rglob("*"):
+            if candidate_artifact_path.is_file() and "__pycache__" not in candidate_artifact_path.parts:
                 try:
-                    content = p.read_bytes().replace(b"\r\n", b"\n")
-                    rel = str(p.relative_to(target_dir))
-                    hashes[rel] = hashlib.sha256(content).hexdigest()
-                except Exception:
-                    pass
-        return hashes
+                    normalized_file_bytes = candidate_artifact_path.read_bytes().replace(b"\r\n", b"\n")
+                    relative_path_key = str(candidate_artifact_path.relative_to(target_dir))
+                    canonical_merkle_manifest[relative_path_key] = hashlib.sha256(normalized_file_bytes).hexdigest()
+                except OSError:
+                    continue
+        return canonical_merkle_manifest
 
-    def _apply_permissions(self, target_dir: Path, make_readonly: bool):
-        """Sets file permissions to read-only or read-write recursively."""
+    def _apply_permissions(self, target_dir: Path, make_readonly: bool) -> None:
+        """Sets file permissions to read-only (`0o444`) or read-write recursively."""
         if not target_dir.exists():
             return
 
-        for p in target_dir.rglob("*"):
-            if p.is_file():
+        for candidate_artifact_path in target_dir.rglob("*"):
+            if candidate_artifact_path.is_file():
                 try:
                     if make_readonly:
-                        # Read-only permission
-                        os.chmod(p, stat.S_IREAD | stat.S_IRGRP | stat.S_IROTH)
+                        # Revoke write bits across User, Group, and Others
+                        os.chmod(candidate_artifact_path, stat.S_IREAD | stat.S_IRGRP | stat.S_IROTH)
                     else:
-                        # Restore write permissions
-                        os.chmod(p, stat.S_IREAD | stat.S_IWRITE | stat.S_IRGRP | stat.S_IWGRP)
-                except Exception:
-                    pass
+                        # Re-grant write permissions for cleanup routines
+                        os.chmod(
+                            candidate_artifact_path,
+                            stat.S_IREAD | stat.S_IWRITE | stat.S_IRGRP | stat.S_IWGRP,
+                        )
+                except OSError:
+                    continue
+
+    def _detect_tampering(
+        self, baseline_manifest: Dict[str, str], candidate_manifest: Dict[str, str]
+    ) -> List[str]:
+        """Compares two Merkle directory manifests to detect deletions, edits, or rogue additions."""
+        compromised_test_artifacts: List[str] = []
+
+        # Detect deleted or altered baseline files
+        for relative_test_path, baseline_digest in baseline_manifest.items():
+            if relative_test_path not in candidate_manifest:
+                compromised_test_artifacts.append(f"{relative_test_path} (DELETED)")
+            elif baseline_digest != candidate_manifest[relative_test_path]:
+                compromised_test_artifacts.append(f"{relative_test_path} (MODIFIED)")
+
+        # Detect injected rogue tests that might bypass standard suite runs
+        for relative_test_path in candidate_manifest:
+            if relative_test_path not in baseline_manifest:
+                compromised_test_artifacts.append(f"{relative_test_path} (ADDED)")
+
+        return compromised_test_artifacts
+
+    def _resolve_candidate_test_directory(self, isolated_worktree_dir: Path) -> Path:
+        """Discovers the active test package within an arbitrary worktree layout."""
+        for candidate_relative_path in ("target_app/tests", "tests", "test"):
+            potential_dir = isolated_worktree_dir / candidate_relative_path
+            if potential_dir.exists() and potential_dir.is_dir():
+                return potential_dir
+
+        for candidate_file in isolated_worktree_dir.rglob("test_*.py"):
+            if ".autopatch" not in candidate_file.parts:
+                return candidate_file.parent
+
+        return isolated_worktree_dir / "target_app" / "tests"
 
     def execute_with_guardrail(
         self,
-        worktree_path: str | Path,
+        worktree_path: Union[str, Path],
         test_command: Optional[str] = None,
         branch_name: str = "candidate_branch",
-        reference_tests_dir: Optional[str | Path] = None,
+        reference_tests_dir: Optional[Union[str, Path]] = None,
     ) -> SandboxRunResult:
         """Executes candidate test suite while strictly enforcing Read-Only Test Guardrails.
-
+        
         If any candidate patch attempts to modify, weaken, or delete existing test files,
         the run is immediately halted and marked as `LUCKY_PASS_BLOCKED`.
         """
-        wt_dir = Path(worktree_path).resolve()
+        isolated_worktree_dir = Path(worktree_path).resolve()
+        candidate_tests_dir = self._resolve_candidate_test_directory(isolated_worktree_dir)
 
-        # Determine candidate tests dir dynamically
-        candidate_tests_dir = None
-        for candidate_rel in ["target_app/tests", "tests", "test"]:
-            p = wt_dir / candidate_rel
-            if p.exists() and p.is_dir():
-                candidate_tests_dir = p
-                break
-        if candidate_tests_dir is None:
-            for p in wt_dir.rglob("test_*.py"):
-                if ".autopatch" not in p.parts:
-                    candidate_tests_dir = p.parent
-                    break
-        if candidate_tests_dir is None:
-            candidate_tests_dir = wt_dir / "target_app" / "tests"
-
-        # Determine reference golden test directory (from main workspace root if not provided)
+        # Establish immutable reference golden test directory from workspace root
         if reference_tests_dir:
-            ref_dir = Path(reference_tests_dir).resolve()
+            reference_golden_dir = Path(reference_tests_dir).resolve()
         elif (self.workspace_root / "target_app" / "tests").exists():
-            ref_dir = self.workspace_root / "target_app" / "tests"
+            reference_golden_dir = self.workspace_root / "target_app" / "tests"
         else:
-            ref_dir = candidate_tests_dir
+            reference_golden_dir = candidate_tests_dir
 
         # 1. Capture Golden Baseline Hashes of Unmodified Test Suite
-        golden_hashes = self._compute_directory_hashes(ref_dir)
+        golden_merkle_manifest = self._compute_directory_hashes(reference_golden_dir)
 
         # 2. Lock Test Files as Read-Only in Candidate Worktree
         self._apply_permissions(candidate_tests_dir, make_readonly=True)
 
-        start_time = time.perf_counter()
-        lucky_pass_blocked = False
-        violation_details = None
-        tampered_files: List[str] = []
-        stdout = ""
-        stderr = ""
-        exit_code = 0
+        clock_start_ns = time.perf_counter()
+        is_lucky_pass_blocked = False
+        security_violation_notice = None
+        compromised_test_artifacts: List[str] = []
+        raw_stdout = ""
+        raw_stderr = ""
+        subcommand_exit_code = 0
 
+        # Construct deterministic test runner command
         if test_command:
-            cmd = test_command
-        elif (wt_dir / "target_app" / "tests").exists():
-            cmd = f'"{sys.executable}" -m unittest discover -s target_app/tests'
-        elif (wt_dir / "tests").exists():
-            cmd = f'"{sys.executable}" -m pytest tests'
+            active_test_cmd = test_command
+        elif (isolated_worktree_dir / "target_app" / "tests").exists():
+            active_test_cmd = f'"{sys.executable}" -m unittest discover -s target_app/tests'
+        elif (isolated_worktree_dir / "tests").exists():
+            active_test_cmd = f'"{sys.executable}" -m pytest tests'
         else:
-            cmd = f'"{sys.executable}" -m unittest discover'
+            active_test_cmd = f'"{sys.executable}" -m unittest discover'
 
         try:
-            # 3. Check for Branch-Level Test Tampering against Golden Reference
-            current_hashes = self._compute_directory_hashes(candidate_tests_dir)
-            tampered_files = self._detect_tampering(golden_hashes, current_hashes)
+            # 3. Pre-execution tampering audit against golden reference
+            pre_execution_manifest = self._compute_directory_hashes(candidate_tests_dir)
+            compromised_test_artifacts = self._detect_tampering(
+                golden_merkle_manifest, pre_execution_manifest
+            )
 
-            if tampered_files:
-                lucky_pass_blocked = True
-                violation_details = (
-                    f"SECURITY_VIOLATION: LUCKY_PASS_ATTEMPT: Candidate modified test files: {tampered_files}"
+            if compromised_test_artifacts:
+                is_lucky_pass_blocked = True
+                security_violation_notice = (
+                    f"SECURITY_VIOLATION: LUCKY_PASS_ATTEMPT: Candidate modified test files: {compromised_test_artifacts}"
                 )
-                exit_code = 126  # Command invoked cannot execute / permission error
-                stderr = violation_details
+                subcommand_exit_code = 126  # POSIX permission barrier convention
+                raw_stderr = security_violation_notice
             else:
-                # 4. Execute Test Suite in Subprocess
-                env = os.environ.copy()
-                env["PYTHONPATH"] = f"{wt_dir}{os.pathsep}{env.get('PYTHONPATH', '')}"
+                # 4. Spawn Sandboxed Test Process
+                subcommand_environment = os.environ.copy()
+                subcommand_environment["PYTHONPATH"] = (
+                    f"{isolated_worktree_dir}{os.pathsep}{subcommand_environment.get('PYTHONPATH', '')}"
+                )
 
-                proc = subprocess.run(
-                    cmd,
-                    cwd=str(wt_dir),
+                subcommand_process = subprocess.run(
+                    active_test_cmd,
+                    cwd=str(isolated_worktree_dir),
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
                     shell=True,
                     timeout=30.0,
-                    env=env,
+                    env=subcommand_environment,
                 )
-                stdout = proc.stdout
-                stderr = proc.stderr
-                exit_code = proc.returncode
+                raw_stdout = subcommand_process.stdout
+                raw_stderr = subcommand_process.stderr
+                subcommand_exit_code = subcommand_process.returncode
 
-                # 5. Post-Execution Tampering Check
-                post_hashes = self._compute_directory_hashes(candidate_tests_dir)
-                post_tampered = self._detect_tampering(golden_hashes, post_hashes)
-                if post_tampered:
-                    lucky_pass_blocked = True
-                    tampered_files.extend(post_tampered)
-                    violation_details = (
-                        f"SECURITY_VIOLATION: LUCKY_PASS_ATTEMPT: Test files tampered during execution: {tampered_files}"
+                # 5. Post-execution tampering audit (catches in-memory monkeypatches or disk flush attempts)
+                post_execution_manifest = self._compute_directory_hashes(candidate_tests_dir)
+                post_compromised_files = self._detect_tampering(
+                    golden_merkle_manifest, post_execution_manifest
+                )
+                if post_compromised_files:
+                    is_lucky_pass_blocked = True
+                    compromised_test_artifacts.extend(post_compromised_files)
+                    security_violation_notice = (
+                        f"SECURITY_VIOLATION: LUCKY_PASS_ATTEMPT: Test files tampered during execution: {compromised_test_artifacts}"
                     )
-                    exit_code = 126
+                    subcommand_exit_code = 126
 
         finally:
-            # ALWAYS restore write permissions so OS cleanup never fails on Windows/Linux
+            # Re-grant write permissions so OS cleanup routines never hang on Windows file-locks
             self._apply_permissions(candidate_tests_dir, make_readonly=False)
 
-        duration_ms = round((time.perf_counter() - start_time) * 1000.0, 2)
-        tests_passed = (exit_code == 0) and not lucky_pass_blocked
+        execution_latency_ms = round((time.perf_counter() - clock_start_ns) * 1000.0, 2)
+        suite_succeeded = (subcommand_exit_code == 0) and not is_lucky_pass_blocked
 
         return SandboxRunResult(
             branch_or_worktree=branch_name,
-            tests_passed=tests_passed,
-            lucky_pass_blocked=lucky_pass_blocked,
-            violation_details=violation_details,
-            exit_code=exit_code,
-            duration_ms=duration_ms,
-            stdout=stdout,
-            stderr=stderr,
-            tampered_test_files=tampered_files,
+            tests_passed=suite_succeeded,
+            lucky_pass_blocked=is_lucky_pass_blocked,
+            violation_details=security_violation_notice,
+            exit_code=subcommand_exit_code,
+            duration_ms=execution_latency_ms,
+            stdout=raw_stdout,
+            stderr=raw_stderr,
+            tampered_test_files=compromised_test_artifacts,
         )
-
-    def _detect_tampering(
-        self, baseline: Dict[str, str], current: Dict[str, str]
-    ) -> List[str]:
-        tampered: List[str] = []
-        # Missing files
-        for rel_path in baseline:
-            if rel_path not in current:
-                tampered.append(f"{rel_path} (DELETED)")
-            elif baseline[rel_path] != current[rel_path]:
-                tampered.append(f"{rel_path} (MODIFIED)")
-
-        # Added new unexpected test files
-        for rel_path in current:
-            if rel_path not in baseline:
-                tampered.append(f"{rel_path} (ADDED)")
-
-        return tampered
 
 
 # ==============================================================================
@@ -240,69 +284,70 @@ class SandboxRunner:
 # ==============================================================================
 
 class ShadowTrafficReplayEngine:
-    """Generates 50 synthetic high-entropy edge-case payloads and executes them
-
-    differentially between baseline and candidate codebases to detect regressions,
-    memory anomalies, and latency shifts.
+    """Executes 50 synthetic high-entropy edge-case payloads to measure latency & exception deltas.
+    
+    In financial systems, passing unit tests does not guarantee non-regression under high
+    throughput. This engine runs differential shadow traffic side-by-side between unpatched
+    and patched implementations to benchmark P99 latency deltas and catch arithmetic leaks.
     """
 
     @classmethod
     def generate_synthetic_payloads(cls, count: int = 50) -> List[Dict[str, Any]]:
         """Synthesizes high-entropy payment orders covering all boundary and schema conditions."""
-        rng = random.Random(42)  # Deterministic seed for reproducible evaluation
-        payloads: List[Dict[str, Any]] = []
+        prng_generator = random.Random(42)  # Deterministic seed for reproducible evaluation
+        synthetic_order_workloads: List[Dict[str, Any]] = []
 
-        tiers = ["STANDARD", "SILVER", "GOLD", "PLATINUM"]
-        jurisdictions = ["US-CA", "US-NY", "US-TX", "EU-DE", "GLOBAL-DEFAULT"]
+        customer_tier_hierarchy = ["STANDARD", "SILVER", "GOLD", "PLATINUM"]
+        settlement_jurisdictions = ["US-CA", "US-NY", "US-TX", "EU-DE", "GLOBAL-DEFAULT"]
 
-        for i in range(count):
-            order_id = f"SHADOW-ORD-{i + 1:04d}"
-            tier = rng.choice(tiers)
-            jurisdiction = rng.choice(jurisdictions)
+        for workload_index in range(count):
+            order_reference_id = f"SHADOW-ORD-{workload_index + 1:04d}"
+            selected_tier = prng_generator.choice(customer_tier_hierarchy)
+            selected_jurisdiction = prng_generator.choice(settlement_jurisdictions)
 
-            # Alternate between legacy and modern nested schema
-            use_v2_schema = (i % 2 == 0)
-            if use_v2_schema:
-                customer = {
-                    "customer_id": f"CUST-V2-{i:03d}",
+            # Alternate between legacy flat schema and modern nested object schema
+            is_v2_schema = (workload_index % 2 == 0)
+            if is_v2_schema:
+                customer_profile_spec = {
+                    "customer_id": f"CUST-V2-{workload_index:03d}",
                     "tier_profile": {
-                        "tier_level": tier,
-                        "loyalty_score": rng.randint(100, 1000),
+                        "tier_level": selected_tier,
+                        "loyalty_score": prng_generator.randint(100, 1000),
                     },
                 }
             else:
-                customer = {
-                    "customer_id": f"CUST-V1-{i:03d}",
-                    "tier": tier,
+                customer_profile_spec = {
+                    "customer_id": f"CUST-V1-{workload_index:03d}",
+                    "tier": selected_tier,
                 }
 
-            # Boundary active promo counts: includes 0, 1, 2, 3, 4 (boundary crash), and >4
-            if i % 5 == 0:
-                active_promos = 4  # Crash condition in unpatched code!
-            elif i % 7 == 0:
-                active_promos = 6  # Overflow condition
+            # Stress-test promo denominators: 0, 1, 2, 3, 4 (boundary crash in unpatched), and >4
+            if workload_index % 5 == 0:
+                active_promos_count = 4  # Triggers ZeroDivisionError in unpatched code!
+            elif workload_index % 7 == 0:
+                active_promos_count = 6  # Boundary overflow condition
             else:
-                active_promos = rng.randint(0, 3)
+                active_promos_count = prng_generator.randint(0, 3)
 
-            # Item generation
-            num_items = rng.randint(1, 5)
-            items = []
-            for j in range(num_items):
-                items.append({
-                    "sku": f"SKU-{j:02d}",
-                    "price": round(rng.uniform(5.0, 350.0), 2),
-                    "quantity": rng.randint(1, 4),
+            # Synthesize shopping cart item lines
+            cart_line_count = prng_generator.randint(1, 5)
+            order_cart_items = []
+            for item_idx in range(cart_line_count):
+                order_cart_items.append({
+                    "sku": f"SKU-{item_idx:02d}",
+                    "price": round(prng_generator.uniform(5.0, 350.0), 2),
+                    "quantity": prng_generator.randint(1, 4),
                 })
 
-            payloads.append({
-                "order_id": order_id,
-                "customer": customer,
-                "items": items,
-                "active_promos_count": active_promos,
-                "jurisdiction": jurisdiction,
+            synthetic_order_workloads.append({
+                "order_id": order_reference_id,
+                "customer": customer_profile_spec,
+                "items": order_cart_items,
+                "active_promos_count": active_promos_count,
+                "jurisdiction": selected_jurisdiction,
             })
 
-        return payloads
+        return synthetic_order_workloads
 
     @classmethod
     def run_differential_replay(
@@ -312,60 +357,66 @@ class ShadowTrafficReplayEngine:
         payloads: Optional[List[Dict[str, Any]]] = None,
     ) -> ShadowTrafficMetrics:
         """Executes side-by-side replay, measuring exception rates and p99 latency deltas."""
-        workload = payloads or cls.generate_synthetic_payloads(count=50)
+        workload_stream = payloads or cls.generate_synthetic_payloads(count=50)
 
-        baseline_latencies: List[float] = []
-        candidate_latencies: List[float] = []
-        baseline_exceptions = 0
-        candidate_exceptions = 0
+        unpatched_latencies_ms: List[float] = []
+        candidate_latencies_ms: List[float] = []
+        unpatched_exception_count = 0
+        candidate_exception_count = 0
 
-        for payload in workload:
-            # Baseline execution
-            t0 = time.perf_counter()
+        for order_spec in workload_stream:
+            # 1. Baseline Routine Profiling
+            baseline_clock_start = time.perf_counter()
             try:
-                baseline_fn(payload)
+                baseline_fn(order_spec)
             except Exception:
-                baseline_exceptions += 1
-            t1 = time.perf_counter()
-            baseline_latencies.append((t1 - t0) * 1000.0)
+                unpatched_exception_count += 1
+            baseline_clock_end = time.perf_counter()
+            unpatched_latencies_ms.append((baseline_clock_end - baseline_clock_start) * 1000.0)
 
-            # Candidate execution
-            t2 = time.perf_counter()
+            # 2. Candidate Patched Routine Profiling
+            candidate_clock_start = time.perf_counter()
             try:
-                candidate_fn(payload)
+                candidate_fn(order_spec)
             except Exception:
-                candidate_exceptions += 1
-            t3 = time.perf_counter()
-            candidate_latencies.append((t3 - t2) * 1000.0)
+                candidate_exception_count += 1
+            candidate_clock_end = time.perf_counter()
+            candidate_latencies_ms.append((candidate_clock_end - candidate_clock_start) * 1000.0)
 
-        total = len(workload)
-        base_avg = sum(baseline_latencies) / total
-        cand_avg = sum(candidate_latencies) / total
+        total_iterations = len(workload_stream)
+        baseline_mean_latency = sum(unpatched_latencies_ms) / total_iterations
+        candidate_mean_latency = sum(candidate_latencies_ms) / total_iterations
 
-        # Compute P99 latency
-        baseline_latencies.sort()
-        candidate_latencies.sort()
-        p99_idx = int(math.ceil(0.99 * total)) - 1
-        base_p99 = baseline_latencies[p99_idx]
-        cand_p99 = candidate_latencies[p99_idx]
+        # Calculate P99 tail latency
+        unpatched_latencies_ms.sort()
+        candidate_latencies_ms.sort()
+        p99_percentile_index = int(math.ceil(0.99 * total_iterations)) - 1
+        baseline_p99_latency = unpatched_latencies_ms[p99_percentile_index]
+        candidate_p99_latency = candidate_latencies_ms[p99_percentile_index]
 
-        p99_delta = round(cand_p99 - base_p99, 4)
-        latency_overhead_pct = round(((cand_avg - base_avg) / (base_avg or 0.0001)) * 100.0, 2)
-        exception_delta = round((candidate_exceptions - baseline_exceptions) / total, 4)
+        p99_latency_differential = round(candidate_p99_latency - baseline_p99_latency, 4)
+        latency_overhead_ratio = round(
+            ((candidate_mean_latency - baseline_mean_latency) / (baseline_mean_latency or 0.0001)) * 100.0, 2
+        )
+        fault_rate_differential = round(
+            (candidate_exception_count - unpatched_exception_count) / total_iterations, 4
+        )
 
-        # Regression is detected if candidate has MORE exceptions or massive latency spike
-        regression = (candidate_exceptions > baseline_exceptions) or (latency_overhead_pct > 250.0)
+        # Flag regression if candidate introduces more failures or severe tail-latency spikes (>250%)
+        is_regression_flagged = (candidate_exception_count > unpatched_exception_count) or (
+            latency_overhead_ratio > 250.0
+        )
 
         return ShadowTrafficMetrics(
-            total_payloads=total,
-            baseline_exception_count=baseline_exceptions,
-            candidate_exception_count=candidate_exceptions,
-            exception_rate_delta=exception_delta,
-            baseline_avg_latency_ms=round(base_avg, 4),
-            candidate_avg_latency_ms=round(cand_avg, 4),
-            latency_overhead_percent=latency_overhead_pct,
-            baseline_p99_latency_ms=round(base_p99, 4),
-            candidate_p99_latency_ms=round(cand_p99, 4),
-            p99_latency_delta_ms=p99_delta,
-            regression_detected=regression,
+            total_payloads=total_iterations,
+            baseline_exception_count=unpatched_exception_count,
+            candidate_exception_count=candidate_exception_count,
+            exception_rate_delta=fault_rate_differential,
+            baseline_avg_latency_ms=round(baseline_mean_latency, 4),
+            candidate_avg_latency_ms=round(candidate_mean_latency, 4),
+            latency_overhead_percent=latency_overhead_ratio,
+            baseline_p99_latency_ms=round(baseline_p99_latency, 4),
+            candidate_p99_latency_ms=round(candidate_p99_latency, 4),
+            p99_latency_delta_ms=p99_latency_differential,
+            regression_detected=is_regression_flagged,
         )
