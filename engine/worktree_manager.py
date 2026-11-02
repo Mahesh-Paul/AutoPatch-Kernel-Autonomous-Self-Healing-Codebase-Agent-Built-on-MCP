@@ -117,10 +117,28 @@ class WorktreeManager:
 
         return wt_path
 
+    @staticmethod
+    def _resolve_tests_dir(root: Path) -> Path:
+        """Dynamically locates the test directory within the target codebase."""
+        for candidate_rel in ["target_app/tests", "tests", "test"]:
+            p = root / candidate_rel
+            if p.exists() and p.is_dir():
+                return p
+        for p in root.rglob("test_*.py"):
+            if ".autopatch" not in p.parts:
+                return p.parent
+        return root / "target_app" / "tests"
+
     def apply_patch_candidate(self, worktree_path: Path, candidate: ModelPatchCandidate):
         """Applies candidate file patches to the target worktree."""
         for patch in candidate.patches:
             target_file = worktree_path / patch.relative_path
+            if not target_file.exists():
+                p_name = Path(patch.relative_path).name
+                matches = [p for p in worktree_path.rglob(p_name) if ".autopatch" not in p.parts]
+                if matches:
+                    target_file = matches[0]
+
             target_file.parent.mkdir(parents=True, exist_ok=True)
 
             if target_file.exists():
@@ -172,10 +190,11 @@ class WorktreeManager:
         self.apply_patch_candidate(wt_path, candidate)
 
         # 4. Execute under Read-Only Sandbox Guardrail
+        tests_dir = self._resolve_tests_dir(self.workspace_root)
         sandbox_res = self.sandbox_runner.execute_with_guardrail(
             worktree_path=wt_path,
             branch_name=candidate.target_worktree,
-            reference_tests_dir=self.workspace_root / "target_app" / "tests",
+            reference_tests_dir=tests_dir,
         )
 
         is_disqualified = False

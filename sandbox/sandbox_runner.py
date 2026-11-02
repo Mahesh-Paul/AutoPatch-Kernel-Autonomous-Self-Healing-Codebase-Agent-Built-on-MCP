@@ -71,7 +71,7 @@ class SandboxRunner:
         for p in target_dir.rglob("*"):
             if p.is_file() and "__pycache__" not in p.parts:
                 try:
-                    content = p.read_bytes()
+                    content = p.read_bytes().replace(b"\r\n", b"\n")
                     rel = str(p.relative_to(target_dir))
                     hashes[rel] = hashlib.sha256(content).hexdigest()
                 except Exception:
@@ -108,10 +108,29 @@ class SandboxRunner:
         the run is immediately halted and marked as `LUCKY_PASS_BLOCKED`.
         """
         wt_dir = Path(worktree_path).resolve()
-        candidate_tests_dir = wt_dir / "target_app" / "tests"
+
+        # Determine candidate tests dir dynamically
+        candidate_tests_dir = None
+        for candidate_rel in ["target_app/tests", "tests", "test"]:
+            p = wt_dir / candidate_rel
+            if p.exists() and p.is_dir():
+                candidate_tests_dir = p
+                break
+        if candidate_tests_dir is None:
+            for p in wt_dir.rglob("test_*.py"):
+                if ".autopatch" not in p.parts:
+                    candidate_tests_dir = p.parent
+                    break
+        if candidate_tests_dir is None:
+            candidate_tests_dir = wt_dir / "target_app" / "tests"
 
         # Determine reference golden test directory (from main workspace root if not provided)
-        ref_dir = Path(reference_tests_dir).resolve() if reference_tests_dir else (self.workspace_root / "target_app" / "tests")
+        if reference_tests_dir:
+            ref_dir = Path(reference_tests_dir).resolve()
+        elif (self.workspace_root / "target_app" / "tests").exists():
+            ref_dir = self.workspace_root / "target_app" / "tests"
+        else:
+            ref_dir = candidate_tests_dir
 
         # 1. Capture Golden Baseline Hashes of Unmodified Test Suite
         golden_hashes = self._compute_directory_hashes(ref_dir)
@@ -127,8 +146,14 @@ class SandboxRunner:
         stderr = ""
         exit_code = 0
 
-        default_cmd = f'"{sys.executable}" -m unittest discover -s target_app/tests'
-        cmd = test_command or default_cmd
+        if test_command:
+            cmd = test_command
+        elif (wt_dir / "target_app" / "tests").exists():
+            cmd = f'"{sys.executable}" -m unittest discover -s target_app/tests'
+        elif (wt_dir / "tests").exists():
+            cmd = f'"{sys.executable}" -m pytest tests'
+        else:
+            cmd = f'"{sys.executable}" -m unittest discover'
 
         try:
             # 3. Check for Branch-Level Test Tampering against Golden Reference
