@@ -36,6 +36,8 @@ Thumbs.db
 
 # AutoPatch worktrees
 .autopatch/worktrees/
+.autopatch/live_target/
 .autopatch/*.tmp
+.pytest_cache/
 
 
