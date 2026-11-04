@@ -2,6 +2,18 @@
 
 > **Built on established MCP code-intelligence patterns, CEGIS formal verification, and SWE-bench reward-hacking research applied as a closed production loop.**
 
+---
+
+### 🚀 Quick Links & Live Artifacts
+
+| Resource | Direct Link & Operational Role |
+| :--- | :--- |
+| 🌐 **Live App Demo** | [**autopatch-kernel-autonomous-self-healing.onrender.com**](https://autopatch-kernel-autonomous-self-healing.onrender.com/) — *Interactive 24/7 cloud flight deck with live SSE worktree streaming, AST visualizer, and Z3 proofs.* |
+| 🎬 **Video Pitch (Under 3 Mins)** | [**Watch 3-Minute Live Demo Pitch on YouTube**](https://youtu.be/431FrVUM7yo) — *Live walkthrough hitting all Meta Hackathon rubrics (Impact, Meta AI Tooling, Technical Depth, and Live Demo).* |
+| 🎯 **Target Enterprise Benchmark Repository** | [**github.com/Mahesh-Paul/enterprise-trading-core**](https://github.com/Mahesh-Paul/enterprise-trading-core) — *Official reference benchmark repository containing the crashing fault code (Kubernetes split-brain partition, HFT floating-point precision leak, and PostgreSQL deadlock cycle) ingested and autonomously healed by AutoPatch-Kernel.* |
+
+---
+
 AutoPatch-Kernel is an enterprise-grade autonomous codebase self-healing system designed for the Meta AI Global Hackathon 2026. Given any broken GitHub repository URL, AutoPatch-Kernel dynamically clones the target, captures live OS kernel ring-buffer and container cgroup crash telemetry, extracts surgical causal subgraphs via a **Dual-Plane AST + Kernel Telemetry MCP Server**, generates competing architectural hypotheses across isolated Git worktrees, prevents test-tampering cheats via a cryptographic **Read-Only Sandbox Guardrail**, and proves candidate fixes mathematically safe using the **Microsoft Z3 SMT Theorem Prover** under **Two-Room Specification Isolation**.
 
 ---
